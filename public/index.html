@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DeScribe">
+  <title>DeScribe</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Shown only when a passcode is needed. -->
+  <form id="lock" class="lock" hidden>
+    <h1>DeScribe</h1>
+    <label for="passcode">Enter your passcode</label>
+    <input id="passcode" type="password" autocomplete="off" required>
+    <p id="lock-message" class="error" role="alert"></p>
+    <button class="primary" type="submit">Continue</button>
+  </form>
+
+  <!-- Shown if the Mac can't be reached when the app opens. -->
+  <div id="offline" class="lock" hidden>
+    <h1>Can't reach your Mac</h1>
+    <p>Check that the app is running on your Mac and that your phone is on the same Wi-Fi.</p>
+    <button id="try-again" class="primary" type="button">Try again</button>
+  </div>
+
+  <main id="main" hidden>
+    <header>
+      <h1><button id="menu-button" class="menu-button" type="button" aria-label="DeScribe menu: lists and archive" aria-expanded="false" aria-controls="menu"><span aria-hidden="true">☰</span> DeScribe</button></h1>
+      <div class="document-row">
+        <label class="visually-hidden" for="document-picker">Document</label>
+        <select id="document-picker"></select>
+        <button id="new-document" type="button">New</button>
+      </div>
+    </header>
+
+    <aside id="pair-panel" class="pair-panel" aria-label="Connect a phone">
+      <div class="pair-head">
+        <h2 id="pair-title">Use your phone</h2>
+        <button id="pair-close" class="pair-close" type="button" aria-label="Hide the QR code">✕</button>
+      </div>
+      <p id="pair-about">Scan this with your phone's camera. It opens this list on your phone, and both screens show every change live.</p>
+      <div id="pair-code" class="pair-code"></div>
+      <p id="pair-expires" class="pair-small"></p>
+      <p class="pair-small">Or type this on your phone: <span id="pair-link" class="pair-link"></span></p>
+      <button id="pair-new" type="button">New code</button>
+    </aside>
+
+    <p id="practice-banner" class="banner" hidden></p>
+    <p id="waiting-banner" class="banner" role="status" hidden></p>
+    <p id="notice" class="banner notice" role="alert" hidden></p>
+    <div id="picked-bar" class="banner picked-bar" role="status" hidden>
+      <span id="picked-text"></span>
+      <button id="clear-picked" type="button" aria-label="Stop adding under this line; add new photos at the end">✕</button>
+    </div>
+
+    <div id="progress" class="progress" role="status" hidden>
+      <span id="progress-text"></span>
+      <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+    </div>
+    <ul id="tray" class="tray" aria-label="Photos being added"></ul>
+
+    <p class="hint">Tap a line to fix it. Tap a dot to add or remove a bullet. Tap a yellow word once it's right.</p>
+    <article id="paper" class="paper" aria-label="Document"></article>
+
+    <button id="done-editing" class="done-editing primary" type="button">Done</button>
+
+    <div id="drop-zone" class="drop-zone" hidden><p>Drop photos to add them</p></div>
+
+    <div id="menu-backdrop" class="menu-backdrop" hidden></div>
+    <aside id="menu" class="menu" aria-label="Lists and archive" hidden>
+      <div class="menu-head">
+        <h2>DeScribe</h2>
+        <button id="close-menu" type="button" aria-label="Close menu">✕</button>
+      </div>
+      <p id="menu-message" class="menu-message" role="status"></p>
+      <h3>Projects &amp; lists</h3>
+      <ul id="menu-lists" class="menu-list"></ul>
+      <button id="menu-new-project" class="menu-new" type="button">+ New project</button>
+      <button id="menu-new" class="menu-new" type="button">+ New list (not in a project)</button>
+      <button id="menu-pair" class="menu-new" type="button">Connect another phone (QR code)</button>
+      <h3>Archive</h3>
+      <p class="menu-note">Deleted lists are kept here, in the DeScribe/Archive folder in your OneDrive.</p>
+      <ul id="menu-archive" class="menu-list"></ul>
+    </aside>
+
+    <nav class="bar">
+      <button id="choose" type="button">Photos</button>
+      <button id="snap" class="primary snap" type="button">Snap</button>
+      <button id="word" type="button">Word</button>
+    </nav>
+  </main>
+
+  <input id="camera" type="file" accept="image/*" capture="environment" hidden>
+  <input id="library" type="file" accept="image/*" multiple hidden>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

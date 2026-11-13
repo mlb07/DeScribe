@@ -1,0 +1,17 @@
+{
+  "name": "describe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Snap handwritten notes on an iPhone and turn them into a Word document.",
+  "type": "module",
+  "engines": { "node": ">=20.12" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.5.0",
+    "jszip": "3.10.2",
+    "zod": "4.6.7"
+  }
+}

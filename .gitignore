@@ -1,0 +1,13 @@
+node_modules/
+documents/
+.env
+.DS_Store
+logs/
+backups/
+
+# The old Scribe app, kept on this Mac for reference only
+scribe/
+
+# Your own crew words and team description (copied from the .example files)
+crew-words.txt
+crew-info.txt
