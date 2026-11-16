@@ -342,3 +342,59 @@ body.editing .bar { display: none; }
 }
 
 .error { margin: 0; min-height: 1.4em; color: var(--error); font-size: 15px; }
+
+/* Owner and guest: guests (let in by a QR code) don't see the owner's tools. */
+body:not(.guest) .guest-only { display: none !important; }
+body.guest .owner-only,
+body.guest .pair-panel,
+body.guest #menu-pair { display: none !important; }
+.lock-note { color: var(--soft-text); font-size: 14px; }
+
+/* The password and name box. */
+.ask {
+  width: min(420px, calc(100vw - 32px));
+  padding: 20px;
+  border: none;
+  border-radius: 16px;
+  background: var(--background);
+  color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.ask::backdrop { background: rgba(0, 0, 0, 0.4); }
+.ask form { display: flex; flex-direction: column; gap: 8px; }
+.ask h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
+.ask-about, .ask-hint { margin: 0; color: var(--soft-text); font-size: 14px; }
+.ask label { font-size: 14px; font-weight: 600; margin-top: 4px; }
+.ask-buttons { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.ask-buttons button { flex: 1 1 auto; }
+#ask-extra { color: var(--error); }
+
+/* The Word button's choices. */
+.word-menu {
+  position: fixed;
+  right: 16px;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 15;
+  width: min(300px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--background);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+.word-menu button { text-align: left; }
+.word-note { margin: 0; color: var(--soft-text); font-size: 12px; }
+
+/* The password button on each list and project in the menu. */
+.menu-list .lock-button { padding: 0 10px; min-height: 48px; font-size: 14px; }
+.menu-list .project-actions .lock-button { min-height: 36px; }
+.locked-mark { margin-left: 4px; font-size: 13px; }
+body.asking-password .paper,
+body.asking-password .tray { visibility: hidden; }
+/* On a phone the list name gets the full width; Move, 🔑 and Delete go on the row below it. */
+.menu-list .menu-file { flex-wrap: wrap; }
+.menu-list .menu-file .open-list { flex: 1 1 160px; }
+.menu-list .file-actions { display: flex; gap: 6px; margin-left: auto; }

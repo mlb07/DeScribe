@@ -66,7 +66,7 @@ OneDrive. In the ☰ DeScribe menu under "Projects & lists": "+ New project"; ea
 Rename and Delete, and "+ New file here"; each file has Move (into a project, to another one, or
 out) and Delete. Deleting a project moves the whole folder to the Archive, and Restore brings it
 all back. A file deleted from a project goes back into that project when restored. A project's
-QR code opens the project on the phone so each person picks a file; a file's QR code opens that
+QR code opens the project for guests so each person picks a file; a file's QR code opens only that
 file. Any number of people can work on the same file at once and all see changes live. Files open
 in Word on this Mac can't be moved, and their project can't be renamed or deleted, until closed.
 
@@ -81,11 +81,42 @@ again when you reopen DeScribe ("Picking up 29 photos that were still waiting").
 
 Open the same address in the laptop's browser (same Wi-Fi). The list shows on the left and a QR
 code on the right. Scan it with your phone's camera: DeScribe opens on the phone, already
-unlocked, on the same list. Every change on either screen (photos, edits, bullets, deletes)
-shows on the other one live. On the laptop you can edit lines the same way, add photos with the
-Photos button, or drag photos from Finder or the Photos app onto the page. The Word button
-downloads the file. A phone can show the code too: menu → "Connect another phone (QR code)".
-QR codes last 10 minutes; a new one appears on its own.
+on the same list. Every change on either screen (photos, edits, bullets, deletes) shows on the
+other one live. On the laptop you can edit lines the same way, add photos with the Photos button,
+or drag photos from Finder or the Photos app onto the page. A phone can show the code too: menu →
+"Connect another phone (QR code)".
+
+## Sharing with other people (QR codes and passwords)
+
+Each list and each project has one QR code (and link) that never changes, so you can print it or
+send it. Whoever opens it is a guest: they see and edit only that list (or that project's files),
+can snap and add photos, and can download the Word file. They can't make, move or delete lists,
+see the Archive, change passwords or make QR codes. Only you (with the main passcode) can.
+
+Passwords are optional. When you make a list or project ("New", "+ New list", "+ New project",
+"+ New file here") you can give it a password, or leave it empty to keep it open. Later, the 🔑
+button next to it in the ☰ menu sets, changes or removes it. Guests must enter the password
+before they see anything; you never need it. A list inside a project with a password needs the
+project's password too. Changing a password makes every guest enter the new one. Ten wrong
+tries from one device and it has to wait 15 minutes. Passwords are stored only as a scrambled
+fingerprint (a salted scrypt hash), never as typed.
+
+"Reset link" under the QR code makes a new code: the old one stops working at once, and anyone
+using it is shut out until they scan the new one.
+
+## Word: open it, or download a copy
+
+The Word button gives you three choices: open the file in the Word app, open it in Word on the
+web, or download a copy. Opening uses the file's OneDrive address, which DeScribe reads from the
+OneDrive app's settings on this Mac when it starts (it is never written into the code), so it
+needs you signed in to your work account in Word or the browser.
+
+On the Mac DeScribe runs on, "Open in the Word app" is done by DeScribe itself: Word on a Mac
+only finds the file when its name is given exactly as typed, and browsers turn letters like "é"
+into codes. On a phone or another computer the button uses Word's own link (`ms-word:`): names
+exactly as typed on a Mac, iPhone or iPad, and Microsoft's standard coded form on Windows. Guests only get Download, since
+the file lives in your OneDrive. While the file is open in Word on this Mac, new photos wait
+until you close it.
 
 ## Deleting lists, and the Archive
 
@@ -146,7 +177,9 @@ Changes apply to the next photo, with no restart.
 - `lib/word.js`: makes the Word file.
 - `lib/reader.js` and `lib/prompt.js`: read the handwriting.
 - `lib/documents.js`: stores your documents in a `documents` folder.
-- `lib/app.js`: handles what the phone asks for.
+- `lib/app.js`: handles what the phone asks for, and who (you or a guest) may do what.
+- `lib/access.js`: passwords and the signed guest tickets.
+- `lib/onedrive.js`: finds the OneDrive web address for "Open in Word".
 - `test/`: automated checks. Run them with `npm test`.
 - `scribe/`: the earlier app, kept only for reference.
 

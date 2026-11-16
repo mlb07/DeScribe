@@ -1,5 +1,6 @@
 // Starts the app on your Mac. Run it with: npm start
 
+import { execFile } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from './lib/app.js';
 import { createCrewLoader } from './lib/crew.js';
 import { createDocumentStore, createFolderStore } from './lib/documents.js';
+import { findWordLinks } from './lib/onedrive.js';
 import { DEFAULT_MODEL, createAiReader, createCheckedReader, createPracticeReader } from './lib/reader.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,21 @@ function makeReader() {
   return createCheckedReader({ first, second: createAiReader({ apiKey, model: checkModel }), log: logRead });
 }
 
+// The OneDrive web address of the save folder, for "Open in Word" (found in OneDrive's own settings).
+const wordLink = await findWordLinks(saveFolder);
+
+// Opens a link on this Mac as if it were clicked here (used for "Open in the Word app").
+// The link is passed as an argument, never pasted into the script.
+const openOnMac =
+  process.platform === 'darwin'
+    ? (link) =>
+        new Promise((resolve, reject) => {
+          execFile('osascript', ['-e', 'on run argv', '-e', 'open location (item 1 of argv)', '-e', 'end run', link], { timeout: 15000 }, (error) =>
+            error ? reject(error) : resolve(),
+          );
+        })
+    : null;
+
 const handleRequest = createApp({
   store: saveFolder
     ? createFolderStore({
@@ -63,6 +80,8 @@ const handleRequest = createApp({
   passcode,
   loadCrew: createCrewLoader(here),
   publicFolder: path.join(here, 'public'),
+  wordLink,
+  openOnMac,
 });
 
 const server = http.createServer(handleRequest);
@@ -73,6 +92,7 @@ server.listen(PORT, () => {
   if (practiceReason === 'no-key') console.log('Practice mode: photos become sample text until you add an AI key.');
   if (practiceReason === 'no-passcode') console.log('Practice mode: add APP_PASSCODE to your .env file to switch the AI on.');
   console.log(saveFolder ? `Saving Word files in: ${saveFolder}` : 'Keeping documents inside the app (no SAVE_FOLDER set).');
+  if (saveFolder) console.log(wordLink ? 'Open in Word: on (the folder is in OneDrive).' : 'Open in Word: off (the folder is not in a work OneDrive). Download still works.');
   console.log(`On this Mac, open:  http://localhost:${PORT}`);
   for (const list of Object.values(os.networkInterfaces())) {
     for (const item of list || []) {

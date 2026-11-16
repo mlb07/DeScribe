@@ -17,6 +17,7 @@
     <input id="passcode" type="password" autocomplete="off" required>
     <p id="lock-message" class="error" role="alert"></p>
     <button class="primary" type="submit">Continue</button>
+    <p class="lock-note">Were you sent a QR code? Scan it with your phone's camera instead.</p>
   </form>
 
   <!-- Shown if the Mac can't be reached when the app opens. -->
@@ -32,7 +33,7 @@
       <div class="document-row">
         <label class="visually-hidden" for="document-picker">Document</label>
         <select id="document-picker"></select>
-        <button id="new-document" type="button">New</button>
+        <button id="new-document" class="owner-only" type="button">New</button>
       </div>
     </header>
 
@@ -43,9 +44,9 @@
       </div>
       <p id="pair-about">Scan this with your phone's camera. It opens this list on your phone, and both screens show every change live.</p>
       <div id="pair-code" class="pair-code"></div>
-      <p id="pair-expires" class="pair-small"></p>
+      <p id="pair-status" class="pair-small"></p>
       <p class="pair-small">Or type this on your phone: <span id="pair-link" class="pair-link"></span></p>
-      <button id="pair-new" type="button">New code</button>
+      <button id="pair-reset" type="button">Reset link</button>
     </aside>
 
     <p id="practice-banner" class="banner" hidden></p>
@@ -78,13 +79,21 @@
       <p id="menu-message" class="menu-message" role="status"></p>
       <h3>Projects &amp; lists</h3>
       <ul id="menu-lists" class="menu-list"></ul>
-      <button id="menu-new-project" class="menu-new" type="button">+ New project</button>
-      <button id="menu-new" class="menu-new" type="button">+ New list (not in a project)</button>
-      <button id="menu-pair" class="menu-new" type="button">Connect another phone (QR code)</button>
-      <h3>Archive</h3>
-      <p class="menu-note">Deleted lists are kept here, in the DeScribe/Archive folder in your OneDrive.</p>
-      <ul id="menu-archive" class="menu-list"></ul>
+      <button id="menu-new-project" class="menu-new owner-only" type="button">+ New project</button>
+      <button id="menu-new" class="menu-new owner-only" type="button">+ New list (not in a project)</button>
+      <button id="menu-pair" class="menu-new owner-only" type="button">Connect another phone (QR code)</button>
+      <p class="menu-note guest-only">You were let in by a QR code, so you see only what it opens.</p>
+      <h3 class="owner-only">Archive</h3>
+      <p class="menu-note owner-only">Deleted lists are kept here, in the DeScribe/Archive folder in your OneDrive.</p>
+      <ul id="menu-archive" class="menu-list owner-only"></ul>
     </aside>
+
+    <div id="word-menu" class="word-menu" role="menu" aria-label="Word" hidden>
+      <button id="word-app" type="button" role="menuitem">Open in the Word app</button>
+      <button id="word-web" type="button" role="menuitem">Open in Word on the web</button>
+      <button id="word-download" type="button" role="menuitem">Download a copy</button>
+      <p class="word-note">It's the same file in your OneDrive, so changes show up here too. While it's open in Word on this Mac, new photos wait until you close it.</p>
+    </div>
 
     <nav class="bar">
       <button id="choose" type="button">Photos</button>
@@ -92,6 +101,25 @@
       <button id="word" type="button">Word</button>
     </nav>
   </main>
+
+  <!-- One small box for passwords and names: new list or project, set a password, unlock. -->
+  <dialog id="ask" class="ask">
+    <form id="ask-form" method="dialog">
+      <h2 id="ask-title"></h2>
+      <p id="ask-about" class="ask-about"></p>
+      <label id="ask-name-label" for="ask-name">Name</label>
+      <input id="ask-name" type="text" autocomplete="off" maxlength="120">
+      <label id="ask-password-label" for="ask-password">Password</label>
+      <input id="ask-password" type="password" autocomplete="new-password" maxlength="200">
+      <p id="ask-hint" class="ask-hint"></p>
+      <p id="ask-message" class="error" role="alert"></p>
+      <div class="ask-buttons">
+        <button id="ask-cancel" type="button" value="cancel">Cancel</button>
+        <button id="ask-extra" type="button" hidden></button>
+        <button id="ask-ok" class="primary" type="submit" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
 
   <input id="camera" type="file" accept="image/*" capture="environment" hidden>
   <input id="library" type="file" accept="image/*" multiple hidden>

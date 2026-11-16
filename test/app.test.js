@@ -1237,7 +1237,20 @@ test('live: the connection needs the passcode; a photo that adds nothing sends n
   assert.deepEqual(news.map((n) => n.type), ['lists']);
 });
 
-test('pairing: the laptop gets a QR code with a link to the Mac; the phone claims it once scanned', async () => {
+const claimCode = (base, code) =>
+  fetch(`${base}/api/pair/claim`, { method: 'POST', headers: { 'X-App': 'photo-to-word' }, body: JSON.stringify({ code }) });
+// A guest's phone: no passcode, just its guest ticket and any password tickets.
+const guestCaller = (base, ticket, unlocks = []) => {
+  const call = (route, options = {}) =>
+    fetch(base + route, {
+      ...options,
+      headers: { 'X-App': 'photo-to-word', 'X-Guest': ticket, 'X-Unlock': unlocks.join(','), ...options.headers },
+    });
+  call.unlocks = unlocks;
+  return call;
+};
+
+test('pairing: a list gets one permanent QR code; scanning it gives a guest ticket for that list only', async () => {
   const app = await folderApp({ read: async () => noteSaying('x') }, { passcode: 'rig2026' });
   const id = await newDocument(app.call, 'Paired');
   const r = await app.call('/api/pair', { method: 'POST', body: JSON.stringify({ documentId: id }) });
@@ -1246,7 +1259,9 @@ test('pairing: the laptop gets a QR code with a link to the Mac; the phone claim
   // Opened on the Mac itself (localhost), so the link uses the Mac's Wi-Fi address.
   assert.match(url, /^http:\/\/192\.168\.1\.50:\d+\/p\/[A-HJ-NP-Z2-9]{10}$/);
   assert.match(svg, /^<svg [^>]*viewBox="0 0 \d+ \d+"/);
-  assert.ok(new Date(expiresAt) - Date.now() > 9 * 60 * 1000);
+  assert.equal(expiresAt, undefined, 'the code does not run out');
+  const again = await (await app.call('/api/pair', { method: 'POST', body: JSON.stringify({ documentId: id }) })).json();
+  assert.equal(again.url, url, 'the same list always gets the same code');
   const code = url.split('/p/')[1];
 
   // Scanning opens the link, which sends the phone into the app with the code.
@@ -1255,11 +1270,20 @@ test('pairing: the laptop gets a QR code with a link to the Mac; the phone claim
   assert.equal(opened.status, 302);
   assert.equal(opened.headers.get('location'), `/?pair=${code}`);
 
-  // The phone (no passcode yet) claims the code and gets in, on the same list.
-  const claim = (c) => fetch(`${base}/api/pair/claim`, { method: 'POST', headers: { 'X-App': 'photo-to-word' }, body: JSON.stringify({ code: c }) });
-  const claimed = await (await claim(code.toLowerCase())).json();
-  assert.deepEqual(claimed, { passcode: 'rig2026', documentId: id });
-  assert.equal((await claim(code)).status, 200, 'several phones can scan the same code while it lasts');
+  // The phone claims the code: it gets a guest ticket, never the passcode.
+  const claimed = await (await claimCode(base, code.toLowerCase())).json();
+  assert.equal(claimed.kind, 'list');
+  assert.equal(claimed.id, id);
+  assert.equal(claimed.name, 'Paired');
+  assert.equal(claimed.passcode, undefined);
+  assert.ok(!JSON.stringify(claimed).includes('rig2026'));
+  assert.equal((await claimCode(base, code)).status, 200, 'several phones can scan the same code');
+
+  const guest = guestCaller(base, claimed.guest);
+  assert.deepEqual(await (await guest('/api/me')).json(), { role: 'guest', kind: 'list', id, name: 'Paired' });
+  const seen = await (await guest(`/api/documents/${id}`)).json();
+  assert.equal(seen.document.name, 'Paired');
+  assert.equal(seen.document.wordUrl, null, 'guests get Download only');
 });
 
 test('pairing: wrong or made-up codes are refused and repeated guessing is locked out; codes need the passcode to make', async () => {
@@ -1331,7 +1355,7 @@ test('projects: a project is a folder in OneDrive; files are made in it, listed 
   const { documents } = await (await app.call('/api/documents')).json();
   assert.deepEqual(documents.map((d) => [d.name, d.project]).sort(), [['Day 1', 'Board Retreat'], ['Loose notes', '']]);
   const { projects } = await (await app.call('/api/projects')).json();
-  assert.deepEqual(projects, [{ name: 'Board Retreat', files: 1 }]);
+  assert.deepEqual(projects.map(({ name, files, locked }) => ({ name, files, locked })), [{ name: 'Board Retreat', files: 1, locked: false }]);
 
   // Photos, edits and Word download all work for a file in a project.
   const added = await (await sendPhoto(app.call, day1.id, LABEL(1))).json();
@@ -1448,26 +1472,303 @@ test('projects: two archived projects with the same name, and restoring next to 
   assert.equal(back2.project.name, 'Weekly 3', 'goes back under its original name, numbered');
 });
 
-test('projects: a project QR code opens the project for whoever scans it; changes reach every screen', async () => {
+test('projects: a project QR code lets guests into that project only; changes reach every screen', async () => {
   const app = await folderApp({ read: async () => noteSaying('x') }, { passcode: 'rig2026' });
   await post(app.call, '/api/projects', { name: 'Shared' });
   const ear = await listen(app.call);
   const r = await json(await post(app.call, '/api/pair', { project: 'Shared' }));
   assert.equal(r.status, 200);
   const base = new URL((await app.call('/api/status')).url).origin;
-  const claimed = await (await fetch(`${base}/api/pair/claim`, { method: 'POST', headers: { 'X-App': 'photo-to-word' }, body: JSON.stringify({ code: r.url.split('/p/')[1] }) })).json();
-  assert.deepEqual(claimed, { passcode: 'rig2026', project: 'Shared' });
+  const claimed = await (await claimCode(base, r.url.split('/p/')[1])).json();
+  assert.equal(claimed.kind, 'project');
+  assert.equal(claimed.name, 'Shared');
   assert.equal((await post(app.call, '/api/pair', { project: 'Nope' })).status, 404);
   const doc = (await json(await post(app.call, '/api/documents', { name: 'A', project: 'Shared' }))).document;
+  const other = (await json(await post(app.call, '/api/documents', { name: 'B' }))).document;
+  const guest = guestCaller(base, claimed.guest);
+  assert.deepEqual((await (await guest('/api/documents')).json()).documents.map((d) => d.name), ['A']);
+  assert.deepEqual((await (await guest('/api/projects')).json()).projects.map((p) => p.name), ['Shared']);
+  assert.equal((await guest(`/api/documents/${other.id}`)).status, 403);
   await post(app.call, `/api/documents/${doc.id}/move`, { project: '' });
+  assert.equal((await guest(`/api/documents/${doc.id}`)).status, 403, 'moved out of the project, out of reach');
   await post(app.call, '/api/projects/rename', { from: 'Shared', to: 'Shared 2026' });
-  const news = await ear.waitFor(3);
+  assert.equal((await guest('/api/me')).status, 200, 'renaming keeps the link working');
+  const news = await ear.waitFor(4);
   ear.stop();
-  assert.deepEqual(news.map((n) => n.type), ['lists', 'lists', 'lists']);
+  assert.deepEqual(news.map((n) => n.type), ['lists', 'lists', 'lists', 'lists']);
 });
 
 test('projects: documents kept inside the app say projects need the OneDrive folder', async () => {
   const { call } = await startApp({ reader: { read: async () => noteSaying('x') } });
   assert.equal((await call('/api/projects')).status, 400);
   assert.equal((await post(call, '/api/projects', { name: 'x' })).status, 400);
+});
+
+// --- Guests and passwords -----------------------------------------------------------
+
+async function sharedList(options = {}) {
+  const app = await folderApp(options.reader || { read: async () => ({ notes: [card(P('from the photo'))], issue: '' }) }, { passcode: 'rig2026' });
+  const base = new URL((await app.call('/api/status')).url).origin;
+  const created = await json(await post(app.call, '/api/documents', { name: options.name || 'Secret', project: options.project || '', password: options.password ?? null }));
+  const { url } = await json(await post(app.call, '/api/pair', { documentId: created.document.id }));
+  const claimed = await json(await claimCode(base, url.split('/p/')[1]));
+  return { ...app, base, doc: created.document, guest: guestCaller(base, claimed.guest), ticket: claimed.guest };
+}
+
+test('guests: an open list can be seen, edited and snapped into, but nothing else', async () => {
+  const app = await sharedList();
+  const { guest, doc } = app;
+  assert.equal(doc.locked, false);
+  const photo = await json(await guest(`/api/documents/${doc.id}/photos?photo=${LABEL(1)}`, { method: 'POST', body: JPEG }));
+  assert.equal(photo.status, 200);
+  assert.equal(photo.added, 1);
+  const line = photo.document.notes[0].blocks[0];
+  const edited = await json(await editDoc(guest, doc.id, [{ op: 'set', para: line.para, expect: line.text, text: 'guest edit' }]));
+  assert.equal(edited.status, 200);
+  assert.equal((await guest(`/api/documents/${doc.id}/word`)).status, 200, 'download works');
+  // Owner-only things.
+  for (const [route, body] of [
+    ['/api/documents', { name: 'New' }],
+    ['/api/projects', { name: 'P' }],
+    [`/api/documents/${doc.id}/archive`, {}],
+    [`/api/documents/${doc.id}/move`, { project: '' }],
+    ['/api/pair', { documentId: doc.id }],
+    ['/api/pair/reset', { documentId: doc.id }],
+    ['/api/access/password', { documentId: doc.id, password: 'take over' }],
+  ]) {
+    const r = await json(await post(guest, route, body));
+    assert.equal(r.status, 403, route);
+    assert.equal(r.error.code, 'owner', route);
+  }
+  assert.equal((await guest('/api/archive')).status, 403);
+  // The owner still sees the guest's change.
+  const owned = await json(await app.call(`/api/documents/${doc.id}`));
+  assert.equal(owned.document.notes[0].blocks[0].text, 'guest edit');
+});
+
+test('guests: a password-protected list stays closed until the right password; wrong ones are locked out', async () => {
+  const app = await sharedList({ password: 'blue fish' });
+  const { guest, doc, base, ticket } = app;
+  assert.equal(doc.locked, true);
+  const listed = (await (await guest('/api/documents')).json()).documents;
+  assert.deepEqual(listed.map((d) => [d.name, d.locked]), [['Secret', true]]);
+  assert.equal(listed[0].notes, undefined, 'no words of a locked list in the list of lists');
+  for (const route of [`/api/documents/${doc.id}`, `/api/documents/${doc.id}/word`]) {
+    const r = await json(await guest(route));
+    assert.equal(r.status, 403);
+    assert.equal(r.error.code, 'locked');
+    assert.deepEqual(r.error.lock, { kind: 'list', id: doc.id, name: 'Secret' });
+  }
+  assert.equal((await guest(`/api/documents/${doc.id}/photos?photo=${LABEL(1)}`, { method: 'POST', body: JPEG })).status, 403);
+
+  const unlock = (password) => post(guest, '/api/unlock', { kind: 'list', id: doc.id, password });
+  const wrong = await json(await unlock('red fish'));
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.error.code, 'password');
+  const right = await json(await unlock('blue fish'));
+  assert.equal(right.status, 200);
+  const opened = guestCaller(base, ticket, [right.unlock]);
+  assert.equal((await opened(`/api/documents/${doc.id}`)).status, 200);
+  assert.equal((await (await opened('/api/documents')).json()).documents[0].locked, false);
+  // A made-up unlock ticket does nothing.
+  assert.equal((await guestCaller(base, ticket, [`${right.unlock.split('.')[0]}.forged`])(`/api/documents/${doc.id}`)).status, 403);
+
+  // Ten wrong passwords and the guest waits 15 minutes, even with the right one.
+  for (let i = 0; i < 9; i += 1) assert.equal((await unlock(`nope ${i}`)).status, 401);
+  assert.equal((await unlock('nope 10')).status, 401);
+  assert.equal((await unlock('blue fish')).status, 429);
+});
+
+test('guests: changing or removing the password; the owner never needs it', async () => {
+  const app = await sharedList({ password: 'first one' });
+  const { guest, doc, base, ticket } = app;
+  assert.equal((await app.call(`/api/documents/${doc.id}`)).status, 200, 'the owner opens it without the password');
+  const first = await json(await post(guest, '/api/unlock', { kind: 'list', id: doc.id, password: 'first one' }));
+  const opened = guestCaller(base, ticket, [first.unlock]);
+  assert.equal((await opened(`/api/documents/${doc.id}`)).status, 200);
+
+  // A new password shuts out everyone who entered the old one.
+  assert.equal((await post(app.call, '/api/access/password', { documentId: doc.id, password: 'second one' })).status, 200);
+  assert.equal((await opened(`/api/documents/${doc.id}`)).status, 403);
+  assert.equal((await post(guest, '/api/unlock', { kind: 'list', id: doc.id, password: 'first one' })).status, 401);
+  // Too short is refused.
+  assert.equal((await post(app.call, '/api/access/password', { documentId: doc.id, password: 'abc' })).status, 400);
+  // Removing it opens the list to anyone with the link.
+  assert.equal((await post(app.call, '/api/access/password', { documentId: doc.id, password: null })).status, 200);
+  assert.equal((await guest(`/api/documents/${doc.id}`)).status, 200);
+  assert.equal((await json(await app.call(`/api/documents/${doc.id}`))).document.locked, false);
+});
+
+test('guests: the password is never stored as typed', async () => {
+  const app = await sharedList({ password: 'plain text pw' });
+  const index = await readFile(path.join(path.dirname(app.backup), 'index.json'), 'utf8');
+  assert.ok(!index.includes('plain text pw'));
+  assert.match(index, /"salt"/);
+});
+
+test('guests: resetting the link shuts out everyone who had the old one, live connection included', async () => {
+  const app = await sharedList();
+  const { guest, doc, base } = app;
+  const ear = await listen(guest, 'guest-phone');
+  assert.equal(ear.status, 200);
+  const before = await json(await post(app.call, '/api/pair', { documentId: doc.id }));
+  const after = await json(await post(app.call, '/api/pair/reset', { documentId: doc.id }));
+  assert.notEqual(after.url, before.url);
+  const r = await json(await guest(`/api/documents/${doc.id}`));
+  assert.equal(r.status, 401);
+  assert.equal(r.error.code, 'link');
+  assert.equal((await claimCode(base, before.url.split('/p/')[1])).status, 404, 'the old code no longer works');
+  assert.equal((await claimCode(base, after.url.split('/p/')[1])).status, 200);
+  // The guest's live connection was closed by the Mac.
+  let closed = false;
+  for (let i = 0; i < 50 && !closed; i += 1) {
+    closed = await Promise.race([guest('/api/me').then((res) => res.status === 401), new Promise((res) => setTimeout(() => res(false), 20))]);
+  }
+  ear.stop();
+  assert.ok(closed);
+});
+
+test('guests: a list in a locked project needs the project password too', async () => {
+  const app = await folderApp({ read: async () => noteSaying('x') }, { passcode: 'rig2026' });
+  const base = new URL((await app.call('/api/status')).url).origin;
+  const project = await json(await post(app.call, '/api/projects', { name: 'Board', password: 'board pass' }));
+  assert.equal(project.status, 201);
+  assert.equal(project.project.locked, true);
+  const doc = (await json(await post(app.call, '/api/documents', { name: 'Minutes', project: 'Board' }))).document;
+  const { url } = await json(await post(app.call, '/api/pair', { documentId: doc.id }));
+  const claimed = await json(await claimCode(base, url.split('/p/')[1]));
+  const guest = guestCaller(base, claimed.guest);
+  const r = await json(await guest(`/api/documents/${doc.id}`));
+  assert.equal(r.error.code, 'locked');
+  assert.deepEqual(r.error.lock, { kind: 'project', id: project.project.id, name: 'Board' });
+  const unlocked = await json(await post(guest, '/api/unlock', { kind: 'project', id: project.project.id, password: 'board pass' }));
+  assert.equal(unlocked.status, 200);
+  assert.equal((await guestCaller(base, claimed.guest, [unlocked.unlock])(`/api/documents/${doc.id}`)).status, 200);
+  // The guest's project list shows the lock until they've entered it.
+  const { url: projectUrl } = await json(await post(app.call, '/api/pair', { project: 'Board' }));
+  const projectGuest = (await json(await claimCode(base, projectUrl.split('/p/')[1]))).guest;
+  assert.equal((await json(await guestCaller(base, projectGuest)('/api/projects'))).projects[0].locked, true);
+  assert.equal((await json(await guestCaller(base, projectGuest, [unlocked.unlock])('/api/projects'))).projects[0].locked, false);
+  // A guest can't try passwords on something outside their link.
+  const other = await json(await post(app.call, '/api/projects', { name: 'Other', password: 'other pass' }));
+  assert.equal((await post(guest, '/api/unlock', { kind: 'project', id: other.project.id, password: 'other pass' })).status, 403);
+});
+
+test('guests: live news only covers what the guest can see', async () => {
+  const app = await sharedList();
+  const { guest, doc } = app;
+  const other = (await json(await post(app.call, '/api/documents', { name: 'Private' }))).document;
+  const ear = await listen(guest, 'guest-phone');
+  await sendPhoto(app.call, other.id, LABEL(7));
+  await sendPhoto(app.call, doc.id, LABEL(8));
+  const news = await ear.waitFor(2);
+  ear.stop();
+  const documents = news.filter((n) => n.type === 'document');
+  assert.deepEqual(documents.map((n) => n.id), [doc.id]);
+});
+
+test('guests: made-up or altered tickets get nothing', async () => {
+  const app = await sharedList();
+  const { base, ticket, doc } = app;
+  const [body, signature] = ticket.split('.');
+  const changed = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url')), kind: 'project' })).toString('base64url');
+  for (const bad of ['nonsense', `${changed}.${signature}`, `${body}.${signature.slice(0, -2)}xx`]) {
+    assert.equal((await guestCaller(base, bad)(`/api/documents/${doc.id}`)).status, 401, bad);
+  }
+  assert.equal((await fetch(`${base}/api/documents`, { headers: { 'X-App': 'photo-to-word' } })).status, 401);
+});
+
+test('word links: the owner gets the OneDrive address of the file; guests do not', async () => {
+  const folder = await tempFolder();
+  const store = createFolderStore({ folder: path.join(folder, 'od'), indexFile: path.join(folder, 'index.json'), backupFolder: path.join(folder, 'b') });
+  const handler = createApp({
+    store, reader: { read: async () => noteSaying('x') }, mode: 'ai', passcode: 'rig2026', networkAddress: () => '192.168.1.50',
+    loadCrew: async () => ({ crewInfo: '', crewWords: [] }), publicFolder, log: { error() {} },
+    wordLink: (fileName) => `https://example.test/Documents/DeScribe/${fileName.split('/').map(encodeURIComponent).join('/')}`,
+  });
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, resolve));
+  cleanups.push(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const owner = (route, options = {}) => fetch(base + route, { ...options, headers: { 'X-App': 'photo-to-word', 'X-Passcode': 'rig2026', ...options.headers } });
+  await post(owner, '/api/projects', { name: 'Q4 Plans' });
+  const doc = (await json(await post(owner, '/api/documents', { name: 'Notes & Ideas', project: 'Q4 Plans' }))).document;
+  assert.equal(doc.wordUrl, 'https://example.test/Documents/DeScribe/Q4%20Plans/Notes%20%26%20Ideas.docx');
+  const { url } = await json(await post(owner, '/api/pair', { documentId: doc.id }));
+  const claimed = await json(await claimCode(base, url.split('/p/')[1]));
+  assert.equal((await json(await guestCaller(base, claimed.guest)(`/api/documents/${doc.id}`))).document.wordUrl, null);
+});
+
+test('word links: the OneDrive web address is read from OneDrive settings, and only for a OneDrive folder', async () => {
+  const { findWordLinks } = await import('../lib/onedrive.js');
+  const home = await tempFolder();
+  const settingsFolder = path.join(home, 'settings');
+  const cloudStorage = path.join(home, 'CloudStorage');
+  await mkdir(path.join(settingsFolder, 'Business1'), { recursive: true });
+  await mkdir(path.join(settingsFolder, 'Business2'), { recursive: true });
+  await writeFile(
+    path.join(settingsFolder, 'Business1', 'abc.ini'),
+    'libraryScope = 0 x 5 "MySite" "ODB" 2 "https://acme-my.sharepoint.example/personal/jo_acme" "id" a b c 1 "$Group.Container$/OneDrive - Acme.noindex/OneDrive - Acme" 1 z\n',
+  );
+  await writeFile(path.join(settingsFolder, 'Business1', 'ClientPolicy.ini'), 'DavUrlNamespace = https://acme-my.sharepoint.example/personal/jo_acme/Documents/\n');
+  const options = { settingsFolder, cloudStorage };
+  const link = await findWordLinks(path.join(cloudStorage, 'OneDrive-Acme', 'DeScribe'), options);
+  assert.equal(link('Team A/My List.docx'), 'https://acme-my.sharepoint.example/personal/jo_acme/Documents/DeScribe/Team%20A/My%20List.docx');
+  assert.equal(link('Top.docx'), 'https://acme-my.sharepoint.example/personal/jo_acme/Documents/DeScribe/Top.docx');
+  // Edge cases: not in OneDrive, a different OneDrive, no settings at all.
+  assert.equal(await findWordLinks(path.join(home, 'Desktop', 'DeScribe'), options), null);
+  assert.equal(await findWordLinks(path.join(cloudStorage, 'OneDrive-Other', 'DeScribe'), options), null);
+  assert.equal(await findWordLinks(path.join(cloudStorage, 'OneDrive-Acme'), { settingsFolder: path.join(home, 'missing'), cloudStorage }), null);
+  assert.equal(await findWordLinks('', options), null);
+});
+
+test('a brand-new install: listing projects first, then the first list, works; a "null" records file is recovered', async () => {
+  const folder = await tempFolder();
+  const indexFile = path.join(folder, 'index.json');
+  const make = () => createFolderStore({ folder: path.join(folder, 'od'), indexFile, backupFolder: path.join(folder, 'b') });
+  const store = make();
+  assert.deepEqual(await store.listProjects(), []);
+  const doc = await store.create('First');
+  assert.equal(doc.name, 'First');
+  // An index left as "null" by the old version still opens, and the Word files are found again.
+  await writeFile(indexFile, 'null');
+  const again = make();
+  assert.deepEqual((await again.list()).map((d) => d.name), ['First']);
+  assert.equal((await again.create('Second')).name, 'Second');
+});
+
+test('word links: on the Mac itself, DeScribe opens Word with the name exactly as typed; not for guests or other devices', async () => {
+  const folder = await tempFolder();
+  const store = createFolderStore({ folder: path.join(folder, 'od'), indexFile: path.join(folder, 'index.json'), backupFolder: path.join(folder, 'b') });
+  const opened = [];
+  let here = true;
+  const handler = createApp({
+    store, reader: { read: async () => noteSaying('x') }, mode: 'ai', passcode: 'rig2026', networkAddress: () => '192.168.1.50',
+    loadCrew: async () => ({ crewInfo: '', crewWords: [] }), publicFolder, log: { error() {} },
+    wordLink: (fileName) => `https://example.test/Documents/DeScribe/${fileName.split('/').map(encodeURIComponent).join('/')}`,
+    openOnMac: async (link) => { opened.push(link); },
+    isThisMac: () => here,
+  });
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, resolve));
+  cleanups.push(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const owner = (route, options = {}) => fetch(base + route, { ...options, headers: { 'X-App': 'photo-to-word', 'X-Passcode': 'rig2026', ...options.headers } });
+  await post(owner, '/api/projects', { name: 'Q4 Plans' });
+  const doc = (await json(await post(owner, '/api/documents', { name: "Café O'Neil & Co #2 50%", project: 'Q4 Plans' }))).document;
+  assert.equal((await json(await owner('/api/me'))).onThisMac, true);
+  assert.equal((await post(owner, `/api/documents/${doc.id}/open-in-word`, {})).status, 200);
+  assert.deepEqual(opened, ["ms-word:ofe|u|https://example.test/Documents/DeScribe/Q4 Plans/Café O'Neil & Co #2 50%.docx"]);
+  // From a phone or another computer: not offered, and refused.
+  here = false;
+  assert.equal((await json(await owner('/api/me'))).onThisMac, false);
+  assert.equal((await post(owner, `/api/documents/${doc.id}/open-in-word`, {})).status, 400);
+  // Guests never.
+  here = true;
+  const { url } = await json(await post(owner, '/api/pair', { documentId: doc.id }));
+  const claimed = await json(await claimCode(base, url.split('/p/')[1]));
+  const guest = guestCaller(base, claimed.guest);
+  assert.equal((await json(await guest('/api/me'))).onThisMac, undefined);
+  assert.equal((await post(guest, `/api/documents/${doc.id}/open-in-word`, {})).status, 403);
+  assert.equal(opened.length, 1);
 });

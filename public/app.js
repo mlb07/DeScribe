@@ -23,6 +23,27 @@ function recall(key) {
 // --- Talking to the Mac -------------------------------------------------------
 
 let passcode = recall('passcode');
+// A guest (let in by a list's or project's QR code) has a ticket instead of the passcode,
+// plus a ticket for each password they've entered.
+let guest = recall('guest');
+let unlocks = (() => {
+  try {
+    const saved = JSON.parse(recall('unlocks') || '[]');
+    return Array.isArray(saved) ? saved.filter((t) => typeof t === 'string') : [];
+  } catch {
+    return [];
+  }
+})();
+let role = 'owner';
+let onThisMac = false; // this browser is on the Mac DeScribe runs on
+// Set when the owner reset the link this guest came in with (kept, so a reload still says why).
+let linkProblem = recall('linkProblem');
+function linkGone(message) {
+  linkProblem = message || 'This link no longer works. Ask the owner for the new QR code.';
+  remember('linkProblem', linkProblem);
+  guest = '';
+  remember('guest', '');
+}
 // A name for this screen, so it can tell its own changes from other screens' changes.
 const clientId = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -35,8 +56,15 @@ class CallProblem extends Error {
   }
 }
 
-async function callMac(path, { method = 'GET', body, type, extraHeaders = {} } = {}) {
-  const headers = { 'X-App': 'photo-to-word', 'X-Passcode': passcode, 'X-Client': clientId, ...extraHeaders };
+function authHeaders() {
+  const headers = { 'X-Passcode': passcode, 'X-Client': clientId };
+  if (guest) headers['X-Guest'] = guest;
+  if (guest && unlocks.length) headers['X-Unlock'] = unlocks.join(',');
+  return headers;
+}
+
+async function callMac(path, { method = 'GET', body, type, extraHeaders = {}, tries = 0 } = {}) {
+  const headers = { 'X-App': 'photo-to-word', ...authHeaders(), ...extraHeaders };
   if (type) headers['Content-Type'] = type;
   let response;
   try {
@@ -51,6 +79,12 @@ async function callMac(path, { method = 'GET', body, type, extraHeaders = {} } =
   } catch {
     // Not a message from the app; fall through to the general wording.
   }
+  // A password-protected list or project: ask for its password, then try again.
+  if (response.status === 403 && details.code === 'locked' && details.lock && tries < 3) {
+    await askToUnlock(details.lock);
+    return callMac(path, { method, body, type, extraHeaders, tries: tries + 1 });
+  }
+  if (response.status === 401 && details.code === 'link') linkGone(details.message);
   throw new CallProblem(details.message || 'Something went wrong.', {
     status: response.status,
     retryable: Boolean(details.retryable),
@@ -59,6 +93,138 @@ async function callMac(path, { method = 'GET', body, type, extraHeaders = {} } =
 }
 
 const callJson = async (path, options) => (await callMac(path, options)).json();
+const postJson = (path, body) => callJson(path, { method: 'POST', type: 'application/json', body: JSON.stringify(body) });
+
+// --- The small box for names and passwords ------------------------------------------
+// ask({ title, about, name, password, ok, extra, cancelable, check }) shows the box and
+// resolves with what check() returned, or null if cancelled. If check() throws, its
+// message shows in the box and the box stays open.
+
+function ask({ title, about = '', name = null, password = null, ok = 'OK', extra = null, cancelable = true, check }) {
+  const dialog = $('ask');
+  $('ask-title').textContent = title;
+  $('ask-about').textContent = about;
+  $('ask-about').hidden = !about;
+  for (const [field, settings] of [['name', name], ['password', password]]) {
+    $(`ask-${field}`).hidden = !settings;
+    $(`ask-${field}-label`).hidden = !settings;
+    $(`ask-${field}`).value = settings?.value || '';
+    if (settings) $(`ask-${field}-label`).textContent = settings.label;
+  }
+  if (password) $('ask-password').autocomplete = password.current ? 'current-password' : 'new-password';
+  $('ask-hint').textContent = password?.hint || name?.hint || '';
+  $('ask-hint').hidden = !$('ask-hint').textContent;
+  $('ask-message').textContent = '';
+  $('ask-ok').textContent = ok;
+  // A box that closed after a successful save left its buttons greyed out: start fresh.
+  $('ask-ok').disabled = false;
+  $('ask-extra').disabled = false;
+  $('ask-extra').hidden = !extra;
+  $('ask-extra').textContent = extra?.label || '';
+  $('ask-cancel').hidden = !cancelable;
+
+  return new Promise((resolve) => {
+    let busy = false;
+    const values = () => ({ name: $('ask-name').value, password: $('ask-password').value });
+    const run = async (job) => {
+      if (busy) return;
+      busy = true;
+      $('ask-ok').disabled = true;
+      $('ask-extra').disabled = true;
+      $('ask-message').textContent = '';
+      try {
+        finish(await job());
+      } catch (problem) {
+        $('ask-message').textContent = problem.message;
+        busy = false;
+        $('ask-ok').disabled = false;
+        $('ask-extra').disabled = false;
+        const field = !$('ask-password').hidden ? $('ask-password') : $('ask-name');
+        field.focus();
+        field.select();
+      }
+      busy = false;
+    };
+    const onSubmit = (event) => {
+      event.preventDefault();
+      run(async () => (check ? check(values()) : values()));
+    };
+    const onExtra = () => run(() => extra.run(values()));
+    const onCancel = (event) => {
+      event.preventDefault();
+      if (cancelable && !busy) finish(null);
+    };
+    const cleanup = () => {
+      $('ask-form').removeEventListener('submit', onSubmit);
+      $('ask-extra').removeEventListener('click', onExtra);
+      $('ask-cancel').removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onCancel);
+    };
+    function finish(result) {
+      cleanup();
+      $('ask-ok').disabled = false;
+      $('ask-extra').disabled = false;
+      dialog.close();
+      resolve(result ?? null);
+    }
+    $('ask-form').addEventListener('submit', onSubmit);
+    $('ask-extra').addEventListener('click', onExtra);
+    $('ask-cancel').addEventListener('click', onCancel);
+    dialog.addEventListener('cancel', onCancel); // the Escape key
+    dialog.showModal();
+    (name ? $('ask-name') : password ? $('ask-password') : $('ask-ok')).focus();
+  });
+}
+
+const checkNewPassword = (password) => {
+  if (password && password.length < 4) throw new Error('A password needs at least 4 characters.');
+};
+
+// What a ticket is for ({ kind, id }); the Mac checks the rest.
+function ticketFor(ticket) {
+  try {
+    return JSON.parse(atob(ticket.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return {};
+  }
+}
+
+// A guest opened something with a password: ask for it once (several calls can wait on it).
+const unlocking = new Map();
+function askToUnlock(lock) {
+  const key = `${lock.kind}:${lock.id}`;
+  if (!unlocking.has(key)) unlocking.set(key, unlockFlow(lock).finally(() => unlocking.delete(key)));
+  return unlocking.get(key);
+}
+
+async function unlockFlow(lock) {
+  const what = lock.kind === 'project' ? `The project "${lock.name}"` : `"${lock.name}"`;
+  // Nothing of a locked list stays on screen while the password is asked for.
+  const showing = current && (current.id === lock.id || current.projectId === lock.id);
+  if (showing) document.body.classList.add('asking-password');
+  const opened = await ask({
+    title: `🔒 ${lock.name}`,
+    about: `${what} is password protected. Enter its password to see and edit it.`,
+    password: { label: 'Password', current: true },
+    ok: 'Open',
+    check: async ({ password }) => {
+      const { unlock } = await postJson('/api/unlock', { kind: lock.kind, id: lock.id, password });
+      unlocks = [...unlocks.filter((t) => ticketFor(t).id !== lock.id), unlock].slice(-50);
+      remember('unlocks', JSON.stringify(unlocks));
+      return true;
+    },
+  });
+  document.body.classList.remove('asking-password');
+  if (!opened) {
+    if (showing && current && (current.id === lock.id || current.projectId === lock.id)) {
+      current = null;
+      resetEdits();
+      showDocument(true);
+      showDocumentPicker();
+    }
+    throw new CallProblem('That needs its password.', { status: 403, code: 'cancelled' });
+  }
+}
 
 // --- Messages at the top of the screen -----------------------------------------
 
@@ -322,7 +488,7 @@ function showDocument(force = false) {
   if (!current || current.notes.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing here yet. Tap Snap to add your first photo.';
+    empty.textContent = current ? 'Nothing here yet. Tap Snap to add your first photo.' : 'Open a list from the ☰ DeScribe menu.';
     paper.append(empty);
     return;
   }
@@ -410,12 +576,13 @@ function refreshPicks() {
 
 function showDocumentPicker() {
   const picker = $('document-picker');
-  const option = ({ id, name }) => {
+  const option = ({ id, name, locked }) => {
     const item = document.createElement('option');
     item.value = id;
-    item.textContent = name;
+    item.textContent = locked ? `${name} 🔒` : name;
     return item;
   };
+
   const groups = [...documents.filter((doc) => !doc.project).map(option)];
   const projectNames = [...new Set(documents.filter((doc) => doc.project).map((doc) => doc.project))].sort((a, b) => a.localeCompare(b));
   for (const project of projectNames) {
@@ -424,8 +591,14 @@ function showDocumentPicker() {
     group.append(...documents.filter((doc) => doc.project === project).map(option));
     groups.push(group);
   }
+  if (!current) {
+    // Nothing open (for example a guest who cancelled a password): picking any list opens it.
+    const choose = option({ id: '', name: 'Pick a list…' });
+    choose.disabled = true;
+    groups.unshift(choose);
+  }
   picker.replaceChildren(...groups);
-  if (current) picker.value = current.id;
+  picker.value = current ? current.id : '';
 }
 
 async function openDocument(id) {
@@ -448,23 +621,35 @@ async function openDocument(id) {
   if (switching) showPairPanel(true, '');
 }
 
-async function createDocument(name, project = '') {
+async function createDocument(name, project = '', password = '') {
   if (current && !(await saveAllEdits())) {
-    alert("Your last change hasn't been saved yet. Try again once it's saved.");
-    return;
+    throw new Error("Your last change hasn't been saved yet. Try again once it's saved.");
   }
-  const { document: created } = await callJson('/api/documents', {
-    method: 'POST',
-    type: 'application/json',
-    body: JSON.stringify({ name, project }),
-  });
-  documents.unshift({ id: created.id, name: created.name, project: created.project || '' });
+  const { document: created } = await postJson('/api/documents', password ? { name, project, password } : { name, project });
+  documents.unshift({ id: created.id, name: created.name, project: created.project || '', locked: created.locked });
   current = created;
   resetEdits();
   remember('document', created.id);
   showDocumentPicker();
   showDocument(true);
   showPairPanel(true, '');
+}
+
+const PASSWORD_HINT = 'Optional. Leave it empty and anyone with the QR code can see and edit. With a password, they have to enter it first. You never need it.';
+
+// "New list" (or "New file here" in a project): a name, and a password if you want one.
+function askNewList(project = '') {
+  return ask({
+    title: project ? `New file in "${project}"` : 'New list',
+    name: { label: 'Name' },
+    password: { label: 'Password (optional)', hint: PASSWORD_HINT },
+    ok: 'Create',
+    check: async ({ name, password }) => {
+      checkNewPassword(password);
+      await createDocument(name, project, password);
+      return true;
+    },
+  });
 }
 
 // --- Editing on the main screen -------------------------------------------------
@@ -1192,9 +1377,71 @@ async function runLine() {
   }
 }
 
-// --- Word download ------------------------------------------------------------
+// --- Word: open it, or download a copy -------------------------------------------
+// You (the owner) can open the file straight from OneDrive, in the Word app or in Word
+// on the web. Guests get a downloaded copy, since the file lives in your OneDrive.
+
+function closeWordMenu() {
+  $('word-menu').hidden = true;
+  $('word').setAttribute('aria-expanded', 'false');
+}
+
+// The link that opens the file in the Word app. Word on a Mac (tested) wants the file's
+// address with its name exactly as typed ("A&B 50%.docx"); with codes such as %20 it says it
+// can't find the file. Word on iPhone and iPad is built the same way. Word on Windows gets
+// Microsoft's standard form, with codes, which is what SharePoint's own links use.
+const applePlatform = /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent);
+function wordAppLink(webAddress) {
+  let address = webAddress;
+  if (applePlatform) {
+    try {
+      address = decodeURIComponent(webAddress);
+    } catch {
+      // Not a well-formed address: send it as it is.
+    }
+  }
+  return `ms-word:ofe|u|${address}`;
+}
+
+async function openInWord(where) {
+  closeWordMenu();
+  if (!current?.wordUrl) return;
+  if (where === 'app' && onThisMac) {
+    // On the Mac DeScribe runs on, DeScribe opens Word itself: no browser prompt, any file name.
+    try {
+      if (!(await saveAllEdits())) throw new Error("Your last change hasn't been saved yet. Try again once it's saved.");
+      await callJson(`/api/documents/${current.id}/open-in-word`, { method: 'POST' });
+      showNotice(`Opening "${current.name}" in Word. New photos wait until you close it there.`);
+    } catch (problem) {
+      alert(problem.message);
+    }
+    return;
+  }
+  const address = where === 'web' ? `${current.wordUrl}?web=1` : wordAppLink(current.wordUrl);
+  if (settled()) {
+    // Nothing waiting to save: open straight away (browsers only allow this right after a tap).
+    if (where === 'web') window.open(address, '_blank', 'noopener');
+    else location.href = address;
+    return;
+  }
+  const tab = where === 'web' ? window.open('', '_blank') : null;
+  if (!(await saveAllEdits())) {
+    tab?.close();
+    alert("Your last change hasn't been saved yet. Try again once it's saved.");
+    return;
+  }
+  if (tab) {
+    tab.opener = null;
+    tab.location.href = address;
+  } else if (where === 'web') {
+    window.open(address, '_blank', 'noopener');
+  } else {
+    location.href = address;
+  }
+}
 
 async function downloadWord() {
+  closeWordMenu();
   if (!current) return;
   const button = $('word');
   button.disabled = true;
@@ -1223,7 +1470,7 @@ function showOnly(section) {
 }
 
 function showLock(message = '') {
-  $('lock-message').textContent = message;
+  $('lock-message').textContent = linkProblem || message;
   $('passcode').value = '';
   showOnly('lock');
 }
@@ -1233,8 +1480,8 @@ const PRACTICE_WORDING = {
   'no-passcode': 'Practice mode: add a passcode to your .env file to switch the AI on.',
 };
 
-// Opened from a QR code on a laptop: the link carries a short-lived code that unlocks
-// the app and opens the same list, so there's no passcode to type.
+// Opened from a QR code: the link carries the list's or project's permanent code. The
+// Mac swaps it for a guest ticket that opens only that list or project.
 let openProjectOnStart = '';
 
 async function claimPairCode() {
@@ -1242,18 +1489,43 @@ async function claimPairCode() {
   if (!code) return;
   history.replaceState(null, '', '/');
   try {
-    const paired = await callJson('/api/pair/claim', { method: 'POST', type: 'application/json', body: JSON.stringify({ code }) });
-    passcode = paired.passcode;
-    remember('passcode', passcode);
-    if (paired.project) {
-      openProjectOnStart = paired.project;
-      showNotice(`Connected to the project "${paired.project}". Pick a file to work on; everyone sees changes live.`);
+    const paired = await postJson('/api/pair/claim', { code });
+    // The owner scanning their own code stays the owner.
+    let owner = false;
+    if (passcode) {
+      try {
+        owner = (await callJson('/api/me')).role === 'owner';
+      } catch {
+        owner = false;
+      }
+    }
+    if (!owner) {
+      guest = paired.guest;
+      remember('guest', guest);
+      passcode = '';
+      remember('passcode', '');
+    }
+    linkProblem = '';
+    remember('linkProblem', '');
+    if (paired.kind === 'project') {
+      openProjectOnStart = paired.name;
+      showNotice(`Connected to the project "${paired.name}". Pick a file to work on; everyone sees changes live.`);
     } else {
-      remember('document', paired.documentId);
-      showNotice('Connected. This phone and the laptop now show the same list, live.');
+      remember('document', paired.id);
+      showNotice('Connected. Everyone on this list sees every change live.');
     }
   } catch (problem) {
     showNotice(problem.message);
+    // Not let in by anything else: the lock screen is what they'll see, so say it there.
+    if (!guest && !passcode) linkProblem = problem.message;
+  }
+}
+
+async function loadProjects() {
+  try {
+    ({ projects } = await callJson('/api/projects'));
+  } catch {
+    projects = []; // documents kept inside the app have no projects
   }
 }
 
@@ -1263,17 +1535,26 @@ async function start() {
     const status = await callJson('/api/status');
     $('practice-banner').textContent = PRACTICE_WORDING[status.practiceReason] || '';
     $('practice-banner').hidden = status.mode !== 'practice';
+    ({ role, onThisMac = false } = await callJson('/api/me'));
+    document.body.classList.toggle('guest', role === 'guest');
+    await loadProjects();
 
     ({ documents } = await callJson('/api/documents'));
     if (documents.length === 0) {
-      await createDocument('My notes');
+      if (role === 'owner') await createDocument('My notes');
+      else showNotice('Nothing is in this project yet. Lists the owner adds will show up here.');
     } else {
       const inProject = openProjectOnStart && documents.find((doc) => doc.project === openProjectOnStart);
       const remembered = current?.id || recall('document');
       const id = inProject ? inProject.id : documents.some((doc) => doc.id === remembered) ? remembered : documents[0].id;
-      await openDocument(id);
+      try {
+        await openDocument(id);
+      } catch (problem) {
+        if (problem.code !== 'cancelled') throw problem; // didn't enter the password: stay on the menu
+      }
     }
     showOnly('main');
+    if (!current) showDocument(true);
     if (openProjectOnStart) {
       // Scanned a project's code: show its files so you can pick one.
       const project = openProjectOnStart;
@@ -1288,7 +1569,7 @@ async function start() {
     if (hasUnsavedEdits()) saveSoon(0);
   } catch (problem) {
     if (problem.status === 401) {
-      showLock(passcode ? problem.message : '');
+      showLock(passcode || guest || linkProblem ? problem.message : '');
     } else if (problem.status === 429) {
       showLock(problem.message);
     } else {
@@ -1301,6 +1582,8 @@ $('lock').addEventListener('submit', (event) => {
   event.preventDefault();
   passcode = $('passcode').value;
   remember('passcode', passcode);
+  linkProblem = '';
+  remember('linkProblem', '');
   start();
 });
 
@@ -1337,10 +1620,22 @@ async function connectLive() {
   let connected = false;
   try {
     const response = await fetch('/api/events', {
-      headers: { 'X-Passcode': passcode, 'X-Client': clientId },
+      headers: authHeaders(),
       signal: controller.signal,
       cache: 'no-store',
     });
+    if (response.status === 401) {
+      // The passcode changed, or the owner reset this guest's link.
+      live.controller = null;
+      try {
+        const details = (await response.json()).error || {};
+        if (details.code === 'link') linkGone(details.message);
+      } catch {
+        // No details: the lock screen explains.
+      }
+      start();
+      return;
+    }
     if (!response.ok || !response.body) throw new Error('No live connection.');
     connected = true;
     live.retry = 1000;
@@ -1418,14 +1713,24 @@ async function refreshListsFromMac() {
   }
   documents = latest;
   if (current && !documents.some((doc) => doc.id === current.id)) {
-    // This list was deleted on another screen.
+    // This list was deleted on another screen (or, for a guest, is no longer shared).
     const gone = current.name;
     current = null;
     resetEdits();
-    if (documents.length) await openDocument(documents[0].id);
-    else await createDocument('My notes');
-    showNotice(`"${gone}" was deleted on another screen. It's in the Archive if you need it.`);
+    try {
+      if (documents.length) await openDocument(documents[0].id);
+      else if (role === 'owner') await createDocument('My notes');
+      else showDocument(true);
+    } catch (problem) {
+      if (problem.code !== 'cancelled') throw problem;
+      showDocument(true);
+    }
+    showNotice(role === 'owner' ? `"${gone}" was deleted on another screen. It's in the Archive if you need it.` : `"${gone}" was deleted, or is no longer shared with you.`);
+  } else if (role === 'guest' && current && documents.find((doc) => doc.id === current.id)?.locked) {
+    // The owner just put a password on the list you have open.
+    openDocument(current.id).catch(() => {});
   }
+  if (role === 'owner') await loadProjects();
   showDocumentPicker();
   if (!$('menu').hidden) await refreshMenu();
 }
@@ -1433,39 +1738,54 @@ async function refreshListsFromMac() {
 // --- Laptop: QR code to connect a phone, and drag-and-drop photos ---------------------
 
 const wideScreen = window.matchMedia('(min-width: 900px)');
-const pair = { timer: null, forDocument: null, project: '' };
+let projects = [];
+const pair = { shown: '', project: '' };
+
+function pairStatus() {
+  const locked = pair.project ? projects.find((p) => p.name === pair.project)?.locked : current?.locked;
+  const who = locked ? 'Anyone with it also needs the password.' : 'Anyone with it can see and edit, no password needed.';
+  return `This code never changes, so you can print it or send it. ${who} "Reset link" makes a new code and stops the old one working.`;
+}
+
+function showPairCode({ svg, url }) {
+  $('pair-code').innerHTML = svg; // made by the Mac from a link it built itself
+  $('pair-link').textContent = url;
+  $('pair-status').textContent = pairStatus();
+}
 
 // The QR code is for the open file, or (when asked from a project) for the whole project.
+// Each list and project keeps the same code until you reset it.
 async function showPairPanel(force = false, project = undefined) {
+  if (role !== 'owner') return;
   if (project !== undefined) pair.project = project || '';
   const wanted = force || wideScreen.matches || $('pair-panel').classList.contains('show');
   if (!wanted || !current) return;
-  if (!force && !pair.project && pair.forDocument === current.id && pair.timer) return;
-  clearTimeout(pair.timer);
-  pair.forDocument = current.id;
-  $('pair-title').textContent = pair.project ? `Use your phone: ${pair.project}` : 'Use your phone';
+  const key = pair.project ? `project:${pair.project}` : `list:${current.id}`;
+  if (!force && pair.shown === key) return;
+  pair.shown = key;
+  $('pair-title').textContent = pair.project ? `Share: ${pair.project}` : `Share: ${current.name}`;
   $('pair-about').textContent = pair.project
-    ? `Scan this to open the project "${pair.project}" on your phone and pick a file. Everyone sees every change live.`
-    : "Scan this with your phone's camera. It opens this list on your phone, and both screens show every change live.";
+    ? `Scan this to open the project "${pair.project}" and pick a file. Everyone sees every change live.`
+    : "Scan this with a phone's camera to open this list. Everyone sees every change live.";
   try {
-    const { svg, url, expiresAt } = await callJson('/api/pair', {
-      method: 'POST',
-      type: 'application/json',
-      body: JSON.stringify(pair.project ? { project: pair.project } : { documentId: current.id }),
-    });
-    $('pair-code').innerHTML = svg; // made by the Mac from a link it built itself
-    $('pair-link').textContent = url;
-    const minutes = Math.max(1, Math.round((new Date(expiresAt) - Date.now()) / 60000));
-    $('pair-expires').textContent = `This code works for ${minutes} minutes, then a new one appears.`;
-    // A fresh code shortly before this one runs out.
-    pair.timer = setTimeout(() => showPairPanel(true), Math.max(30000, new Date(expiresAt) - Date.now() - 60000));
+    showPairCode(await postJson('/api/pair', pair.project ? { project: pair.project } : { documentId: current.id }));
   } catch (problem) {
     $('pair-code').textContent = '';
-    $('pair-expires').textContent = problem.message;
+    $('pair-status').textContent = problem.message;
   }
 }
 
-$('pair-new').addEventListener('click', () => showPairPanel(true));
+$('pair-reset').addEventListener('click', async () => {
+  if (!current) return;
+  const what = pair.project ? `the project "${pair.project}"` : `"${current.name}"`;
+  if (!confirm(`Make a new QR code for ${what}?\n\nThe old code and link stop working straight away, and anyone using it is shut out until they scan the new one.`)) return;
+  try {
+    showPairCode(await postJson('/api/pair/reset', pair.project ? { project: pair.project } : { documentId: current.id }));
+    showNotice('New QR code made. The old one no longer works.');
+  } catch (problem) {
+    $('pair-status').textContent = problem.message;
+  }
+});
 $('menu-pair').addEventListener('click', () => {
   closeMenu();
   $('pair-panel').classList.add('show');
@@ -1506,7 +1826,26 @@ document.addEventListener('drop', (event) => {
 
 $('snap').addEventListener('click', () => $('camera').click());
 $('choose').addEventListener('click', () => $('library').click());
-$('word').addEventListener('click', downloadWord);
+$('word').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (!current) return;
+  if (!current.wordUrl) {
+    downloadWord(); // guests, and documents kept inside the app
+    return;
+  }
+  const show = $('word-menu').hidden;
+  $('word-menu').hidden = !show;
+  $('word').setAttribute('aria-expanded', String(show));
+});
+$('word-app').addEventListener('click', () => openInWord('app'));
+$('word-web').addEventListener('click', () => openInWord('web'));
+$('word-download').addEventListener('click', downloadWord);
+document.addEventListener('click', (event) => {
+  if (!$('word-menu').hidden && !$('word-menu').contains(event.target)) closeWordMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeWordMenu();
+});
 
 for (const id of ['camera', 'library']) {
   $(id).addEventListener('change', (event) => {
@@ -1518,7 +1857,7 @@ for (const id of ['camera', 'library']) {
 
 $('document-picker').addEventListener('change', (event) => {
   openDocument(event.target.value).catch((problem) => {
-    alert(problem.message);
+    if (problem.code !== 'cancelled') alert(problem.message);
     showDocumentPicker();
   });
 });
@@ -1554,21 +1893,17 @@ function closeMenu() {
   }, 250);
 }
 
-let projects = [];
 
 async function refreshMenu() {
   try {
     ({ documents } = await callJson('/api/documents'));
-    try {
-      ({ projects } = await callJson('/api/projects'));
-    } catch {
-      projects = []; // documents kept inside the app have no projects
-    }
+    await loadProjects();
     showDocumentPicker();
     showMenuLists();
   } catch (problem) {
     menuMessage(problem.message, true);
   }
+  if (role !== 'owner') return; // guests have no Archive
   try {
     const { archived } = await callJson('/api/archive');
     showArchive(archived);
@@ -1590,15 +1925,19 @@ function menuButton(label, onClick, className = '') {
 function fileRow(doc, inProject) {
   const row = document.createElement('li');
   row.className = `menu-file${inProject ? ' in-project' : ''}`;
-  const open = menuButton(doc.name, async () => {
+  const open = menuButton(doc.locked ? `${doc.name} 🔒` : doc.name, async () => {
     closeMenu();
     try {
       await openDocument(doc.id);
     } catch (problem) {
-      alert(problem.message);
+      if (problem.code !== 'cancelled') alert(problem.message);
     }
   }, 'open-list');
   if (current?.id === doc.id) open.setAttribute('aria-current', 'true');
+  if (role !== 'owner') {
+    row.append(open);
+    return row;
+  }
 
   const move = document.createElement('select');
   move.className = 'move-to';
@@ -1617,9 +1956,13 @@ function fileRow(doc, inProject) {
   move.value = '';
   move.addEventListener('change', () => moveFile(doc, move.value, move));
 
+  const key = passwordButton({ kind: 'list', ref: doc.id, name: doc.name, locked: doc.locked });
   const remove = menuButton('Delete', () => deleteList(doc), 'delete-list');
   remove.setAttribute('aria-label', `Delete ${doc.name}`);
-  row.append(open, move, remove);
+  const actions = document.createElement('span');
+  actions.className = 'file-actions';
+  actions.append(move, key, remove);
+  row.append(open, actions);
   return row;
 }
 
@@ -1639,13 +1982,13 @@ function showMenuLists() {
     head.dataset.projectHead = project.name;
     const title = document.createElement('span');
     title.className = 'project-name';
-    title.textContent = `📁 ${project.name}`;
+    title.textContent = `📁 ${project.name}${project.locked ? ' 🔒' : ''}`;
     const count = document.createElement('small');
     count.textContent = `${project.files} file${project.files === 1 ? '' : 's'}`;
     title.append(count);
     const actions = document.createElement('span');
     actions.className = 'project-actions';
-    actions.append(
+    if (role === 'owner') actions.append(
       menuButton('QR', () => {
         closeMenu();
         $('pair-panel').classList.add('show');
@@ -1653,23 +1996,23 @@ function showMenuLists() {
         $('pair-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
       }),
       menuButton('Rename', () => renameProject(project.name)),
+      passwordButton({ kind: 'project', ref: project.name, name: project.name, locked: project.locked }),
       menuButton('Delete', () => deleteProject(project), 'delete-list'),
     );
     head.append(title, actions);
     rows.push(head);
     const files = documents.filter((doc) => doc.project === project.name);
     for (const doc of files) rows.push(fileRow(doc, true));
-    const add = document.createElement('li');
-    add.className = 'menu-file in-project';
-    add.append(
-      menuButton('+ New file here', () => {
-        const name = prompt(`Name for the new file in "${project.name}":`);
-        if (name === null) return;
-        closeMenu();
-        createDocument(name, project.name).catch((problem) => alert(problem.message));
-      }, 'add-file'),
-    );
-    rows.push(add);
+    if (role === 'owner') {
+      const add = document.createElement('li');
+      add.className = 'menu-file in-project';
+      add.append(
+        menuButton('+ New file here', async () => {
+          if (await askNewList(project.name)) closeMenu();
+        }, 'add-file'),
+      );
+      rows.push(add);
+    }
   }
   if (!rows.length) {
     const empty = document.createElement('li');
@@ -1678,6 +2021,50 @@ function showMenuLists() {
     rows.push(empty);
   }
   $('menu-lists').replaceChildren(...rows);
+}
+
+// The 🔑 button: set, change or remove the password of a list or project (owner only).
+function passwordButton(target) {
+  const button = menuButton('🔑', () => changePassword(target), 'lock-button');
+  button.setAttribute('aria-label', `Password for ${target.name}: ${target.locked ? 'on' : 'off'}`);
+  button.title = target.locked ? 'Has a password. Tap to change or remove it.' : 'No password. Tap to add one.';
+  return button;
+}
+
+async function changePassword({ kind, ref, name, locked }) {
+  const where = kind === 'project' ? { project: ref } : { documentId: ref };
+  const save = (password) => postJson('/api/access/password', { ...where, password });
+  const about = locked
+    ? `"${name}" has a password. Type a new one to change it (guests will need the new one), or remove it.`
+    : kind === 'project'
+      ? `Guests who open "${name}", or any file in it, will need this password. You never need it.`
+      : `Guests with the QR code for "${name}" will need this password to see or edit it. You never need it.`;
+  const done = await ask({
+    title: `🔑 Password: ${name}`,
+    about,
+    password: { label: locked ? 'New password' : 'Password', hint: 'At least 4 characters.' },
+    ok: 'Save',
+    extra: locked
+      ? {
+          label: 'Remove password',
+          run: async () => {
+            await save(null);
+            return 'removed';
+          },
+        }
+      : null,
+    check: async ({ password }) => {
+      if (!password) throw new Error('Type a password, or press Cancel.');
+      checkNewPassword(password);
+      await save(password);
+      return 'set';
+    },
+  });
+  if (!done) return;
+  await refreshMenu();
+  if (kind === 'list' && current?.id === ref) current = { ...current, locked: done === 'set' };
+  showPairPanel(true);
+  menuMessage(done === 'removed' ? `"${name}" has no password now: anyone with its QR code can get in.` : `"${name}" now needs its password.`);
 }
 
 async function moveFile(doc, choice, select) {
@@ -1708,15 +2095,19 @@ async function moveFile(doc, choice, select) {
 }
 
 async function newProject() {
-  const name = prompt('Name for the new project:');
-  if (name === null) return;
-  try {
-    const { project } = await callJson('/api/projects', { method: 'POST', type: 'application/json', body: JSON.stringify({ name }) });
-    await refreshMenu();
-    menuMessage(`Project "${project.name}" made. Add files with "+ New file here", or move files in with "Move".`);
-  } catch (problem) {
-    menuMessage(problem.message, true);
-  }
+  const project = await ask({
+    title: 'New project',
+    name: { label: 'Name' },
+    password: { label: 'Password (optional)', hint: `${PASSWORD_HINT} It covers every file in the project.` },
+    ok: 'Create',
+    check: async ({ name, password }) => {
+      checkNewPassword(password);
+      return (await postJson('/api/projects', password ? { name, password } : { name })).project;
+    },
+  });
+  if (!project) return;
+  await refreshMenu();
+  menuMessage(`Project "${project.name}" made${project.locked ? ', with a password' : ''}. Add files with "+ New file here", or move files in with "Move".`);
 }
 
 async function renameProject(from) {
@@ -1844,17 +2235,10 @@ $('menu-backdrop').addEventListener('click', closeMenu);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !$('menu').hidden) closeMenu();
 });
-$('menu-new').addEventListener('click', () => {
-  const name = prompt('Name for the new list:');
-  if (name === null) return;
-  closeMenu();
-  createDocument(name).catch((problem) => alert(problem.message));
+$('menu-new').addEventListener('click', async () => {
+  if (await askNewList()) closeMenu();
 });
 
-$('new-document').addEventListener('click', () => {
-  const name = prompt('Name for the new document:');
-  if (name === null) return;
-  createDocument(name).catch((problem) => alert(problem.message));
-});
+$('new-document').addEventListener('click', () => askNewList());
 
 start();
