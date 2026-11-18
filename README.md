@@ -53,7 +53,8 @@ Set `SAVE_FOLDER=` in `.env` to a folder inside your OneDrive (for example
 Each separate paper in a photo (a sticky note, a card, a page) becomes bullet points. A paper
 of running words is one bullet. A paper that starts with words and then lists things gets the
 list as sub-bullets underneath. A paper that is only a list (bullets, dashes or numbers) keeps
-every item the writer listed as its own bullet.
+every item the writer listed as its own bullet. Numbered lists become bullets too (numbers
+split across cards used to all show "1.").
 Bullets sit together in one tight list in Word, with no blank lines between them.
 
 On the phone, tap a line's bullet dot to remove the bullet, or tap the faint ○ on a plain line

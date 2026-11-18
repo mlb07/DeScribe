@@ -520,23 +520,23 @@ test('each paper becomes one bullet: its opening words, with anything listed as 
   ]);
   assert.deepEqual(shape(paperBullets([card(P('Pump system.'), P('Much quicker.'))])), [['b0:Pump system. Much quicker.']]);
   assert.deepEqual(shape(paperBullets([card(P('Pump issues:'), B('seal'), B('pressure', 1), N('first'), P('after the list'))])), [
-    ['b0:Pump issues:', 'b1:seal', 'b2:pressure', 'n1:first', 'b1:after the list'],
+    ['b0:Pump issues:', 'b1:seal', 'b2:pressure', 'b1:first', 'b1:after the list'],
   ]);
   // A paper that is only a list: every bullet, dash or number the writer drew is its own bullet.
   assert.deepEqual(shape(paperBullets([card(B('Learn'), B('Act'), B('Educate'))])), [['b0:Learn', 'b0:Act', 'b0:Educate']]);
   assert.deepEqual(shape(paperBullets([card(B('Differentiated position'), B('Trusted first call'), B('Donor value', 1), B('Distinctiveness', 1), B('Capacity'))])), [
     ['b0:Differentiated position', 'b0:Trusted first call', 'b1:Donor value', 'b1:Distinctiveness', 'b0:Capacity'],
   ]);
-  assert.deepEqual(shape(paperBullets([card(N('first', 1), N('second', 1), B('aside', 2))])), [['n0:first', 'n0:second', 'b1:aside']]);
+  assert.deepEqual(shape(paperBullets([card(N('first', 1), N('second', 1), B('aside', 2))])), [['b0:first', 'b0:second', 'b1:aside']]);
   assert.deepEqual(paperBullets([card(P('   ')), { nonsense: true }]), []);
 });
 
-test('a list-only card keeps each item as its own bullet, numbered lists keep counting, and backups keep the AI reading', async () => {
+test('a list-only card keeps each item as its own bullet, numbered lists become bullets, and backups keep the AI reading', async () => {
   const reading = { notes: [card(B('one'), B('two'), B('[[three]]')), card(N('a'), N('b'), N('c'))], issue: '' };
   const app = await folderApp({ read: async () => reading });
   const id = await newDocument(app.call, 'List card');
   const { document } = await (await sendPhoto(app.call, id, LABEL(1))).json();
-  assert.deepEqual(shape(document.notes), [['b0:one'], ['b0:two'], ['b0:[[three]]'], ['n0:a'], ['n0:b'], ['n0:c']]);
+  assert.deepEqual(shape(document.notes), [['b0:one'], ['b0:two'], ['b0:[[three]]'], ['b0:a'], ['b0:b'], ['b0:c']]);
   const xml = await wordXml(await readFile(path.join(app.wordFolder, 'List card.docx')));
   const ids = [...xml.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]);
   assert.equal(new Set(ids.slice(3)).size, 1, 'a, b, c stay one numbered list (1, 2, 3), not 1, 1, 1');
@@ -576,8 +576,8 @@ async function editableDoc(name = 'Edit me') {
   const { document } = await (await sendPhoto(app.call, id, LABEL(1))).json();
   return { ...app, id, document };
 }
-const START = [['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]'], ['b0:Letters', 'b1:alpha', 'b1:beta']];
-const IN_WORD = [['b0:the pump is down'], ['b0:Checks:', 'n1:check oil', 'n1:check gauge'], ['b0:Letters', 'b1:alpha', 'b1:beta']];
+const START = [['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil', 'b1:check [[gauge]]'], ['b0:Letters', 'b1:alpha', 'b1:beta']];
+const IN_WORD = [['b0:the pump is down'], ['b0:Checks:', 'b1:check oil', 'b1:check gauge'], ['b0:Letters', 'b1:alpha', 'b1:beta']];
 
 test('editing: the Word file never gets yellow, but the phone still shows the guesses', async () => {
   const { document, wordFolder } = await editableDoc();
@@ -595,8 +595,8 @@ test('editing: changing a word changes it in Word, keeps the list, and clears th
   const response = await editDoc(call, id, [{ op: 'set', para: gauge.para, expect: 'check gauge', text: 'check gauges & <valves>' }]);
   assert.equal(response.status, 200);
   const { document: after } = await response.json();
-  assert.deepEqual(shape(after.notes)[1], ['b0:Checks:', 'n1:check oil', 'n1:check gauges & <valves>']);
-  assert.deepEqual((await wordOf(wordFolder, 'Edit me'))[1], ['b0:Checks:', 'n1:check oil', 'n1:check gauges & <valves>']);
+  assert.deepEqual(shape(after.notes)[1], ['b0:Checks:', 'b1:check oil', 'b1:check gauges & <valves>']);
+  assert.deepEqual((await wordOf(wordFolder, 'Edit me'))[1], ['b0:Checks:', 'b1:check oil', 'b1:check gauges & <valves>']);
   assert.ok(after.version > document.version);
 });
 
@@ -619,13 +619,13 @@ test('editing: return splits a line in two, in the same list, and the phone lear
     { op: 'set', para: oil.para, expect: 'check oil', text: 'check' },
     { op: 'insertAfter', para: oil.para, expect: 'check oil', text: 'oil [[level]]' },
   ])).json();
-  assert.deepEqual(shape(after.notes)[1], ['b0:Checks:', 'n1:check', 'n1:oil [[level]]', 'n1:check [[gauge]]']);
+  assert.deepEqual(shape(after.notes)[1], ['b0:Checks:', 'b1:check', 'b1:oil [[level]]', 'b1:check [[gauge]]']);
   assert.equal(results[0], null);
   assert.equal(results[1], oil.para + 1);
   assert.equal(findLine(after, 'oil [[level]]').para, results[1]);
   assert.equal(indexMap[oil.para], oil.para);
   assert.equal(indexMap[beta.para], beta.para + 1, 'lines below moved down by one');
-  assert.deepEqual((await wordOf(wordFolder, 'Edit me'))[1], ['b0:Checks:', 'n1:check', 'n1:oil level', 'n1:check gauge']);
+  assert.deepEqual((await wordOf(wordFolder, 'Edit me'))[1], ['b0:Checks:', 'b1:check', 'b1:oil level', 'b1:check gauge']);
   // Still one numbered list, so Word numbers it 1, 2, 3.
   const xml = await wordXml(await readFile(path.join(wordFolder, 'Edit me.docx')));
   const ids = [...xml.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]);
@@ -644,8 +644,8 @@ test('editing: backspace joins two lines, and an emptied line is removed', async
   assert.equal(r.indexMap[beta.para], -1);
   const oil = findLine(r.document, 'check oil');
   r = await (await editDoc(call, id, [{ op: 'set', para: oil.para, expect: 'check oil', text: '   ' }])).json();
-  assert.deepEqual(shape(r.document.notes), [['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check [[gauge]]'], ['b0:Letters', 'b1:alpha beta']]);
-  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:the pump is down'], ['b0:Checks:', 'n1:check gauge'], ['b0:Letters', 'b1:alpha beta']]);
+  assert.deepEqual(shape(r.document.notes), [['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check [[gauge]]'], ['b0:Letters', 'b1:alpha beta']]);
+  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:the pump is down'], ['b0:Checks:', 'b1:check gauge'], ['b0:Letters', 'b1:alpha beta']]);
 });
 
 test('editing: deleting a card removes its bullet and sub-bullets, wherever the card is', async () => {
@@ -699,7 +699,7 @@ test('editing: tapping a bullet removes it, and tapping a plain line adds one', 
   assert.equal(r.status, 200);
   let after = (await r.json()).document;
   // "beta" is a sub-bullet, so it stays with the line above it.
-  assert.deepEqual(shape(after.notes), [['p0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]'], ['b0:Letters'], ['p0:alpha', 'b1:beta']]);
+  assert.deepEqual(shape(after.notes), [['p0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil', 'b1:check [[gauge]]'], ['b0:Letters'], ['p0:alpha', 'b1:beta']]);
   let xml = await wordXml(await readFile(path.join(wordFolder, 'Edit me.docx')));
   const plainLine = xml.match(/<w:p>(?:(?!<w:p>).)*?the pump is down.*?<\/w:p>/s)[0];
   assert.doesNotMatch(plainLine, /numPr/);
@@ -1878,22 +1878,22 @@ test('moving: a bullet moves with its sub-bullets, to the top or after any line,
   const { call, id, document, wordFolder } = await editableDoc();
   let r = await json(await editDoc(call, id, [moveOf(document, ['Letters', 'alpha', 'beta'], null)]));
   assert.equal(r.status, 200);
-  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]']]);
-  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the pump is down'], ['b0:Checks:', 'n1:check oil', 'n1:check gauge']]);
+  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil', 'b1:check [[gauge]]']]);
+  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the pump is down'], ['b0:Checks:', 'b1:check oil', 'b1:check gauge']]);
   assert.ok(Array.isArray(r.indexMap));
   // A sub-bullet into another card, after "alpha"; its yellow guess goes with it.
   r = await json(await editDoc(call, id, [moveOf(r.document, ['check [[gauge]]'], 'alpha')]));
-  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'n1:check [[gauge]]', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil']]);
+  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'b1:check [[gauge]]', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil']]);
   // To the very end.
   r = await json(await editDoc(call, id, [moveOf(r.document, ['Letters', 'alpha', 'check [[gauge]]', 'beta'], 'check oil')]));
-  assert.deepEqual(shape(r.document.notes), [['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil'], ['b0:Letters', 'b1:alpha', 'n1:check [[gauge]]', 'b1:beta']]);
-  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:the pump is down'], ['b0:Checks:', 'n1:check oil'], ['b0:Letters', 'b1:alpha', 'n1:check gauge', 'b1:beta']]);
+  assert.deepEqual(shape(r.document.notes), [['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil'], ['b0:Letters', 'b1:alpha', 'b1:check [[gauge]]', 'b1:beta']]);
+  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:the pump is down'], ['b0:Checks:', 'b1:check oil'], ['b0:Letters', 'b1:alpha', 'b1:check gauge', 'b1:beta']]);
 });
 
 test('moving: a sub-bullet can step out to a main bullet, and moving a line to where it already is changes nothing', async () => {
   const { call, id, document, wordFolder } = await editableDoc();
   let r = await json(await editDoc(call, id, [moveOf(document, ['alpha'], null, -1)]));
-  assert.deepEqual(shape(r.document.notes), [['b0:alpha'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]'], ['b0:Letters', 'b1:beta']]);
+  assert.deepEqual(shape(r.document.notes), [['b0:alpha'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'b1:check oil', 'b1:check [[gauge]]'], ['b0:Letters', 'b1:beta']]);
   const before = await readFile(path.join(wordFolder, 'Edit me.docx'));
   r = await json(await editDoc(call, id, [moveOf(r.document, ['check oil'], 'Checks:')]));
   assert.equal(r.status, 200);
