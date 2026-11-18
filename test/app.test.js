@@ -166,7 +166,9 @@ test('files that are not photos, and oversized photos, are refused', async () =>
   const { call } = await startApp({ reader: { read: async () => (reads++, noteSaying('x')) } });
   const id = await newDocument(call);
   assert.equal((await sendPhoto(call, id, LABEL(1), Buffer.from('this is not a photo at all'))).status, 415);
-  assert.equal((await sendPhoto(call, id, LABEL(2), Buffer.alloc(6 * 1024 * 1024, 1))).status, 413);
+  // A photo over 5 MB, and anything over 20 MB (the most a PDF page may be), are too large.
+  assert.equal((await sendPhoto(call, id, LABEL(2), Buffer.concat([JPEG, Buffer.alloc(6 * 1024 * 1024, 1)]))).status, 413);
+  assert.equal((await sendPhoto(call, id, LABEL(3), Buffer.alloc(21 * 1024 * 1024, 1))).status, 413);
   assert.equal(reads, 0);
 });
 
@@ -1771,4 +1773,88 @@ test('word links: on the Mac itself, DeScribe opens Word with the name exactly a
   assert.equal((await json(await guest('/api/me'))).onThisMac, undefined);
   assert.equal((await post(guest, `/api/documents/${doc.id}/open-in-word`, {})).status, 403);
   assert.equal(opened.length, 1);
+});
+
+// --- PDFs ---------------------------------------------------------------------------
+
+async function makePdf(pages = 1, { encrypted = false } = {}) {
+  const { PDFDocument } = await import('pdf-lib');
+  const pdf = await PDFDocument.create();
+  for (let i = 0; i < pages; i += 1) pdf.addPage([300, 400]).drawText(`page ${i + 1}`, { x: 40, y: 300, size: 18 });
+  let bytes = Buffer.from(await pdf.save({ useObjectStreams: false }));
+  if (encrypted) {
+    // A real password-protected PDF names its encryption in the trailer.
+    bytes = Buffer.from(bytes.toString('latin1').replace('trailer\n<<', 'trailer\n<< /Encrypt << /Filter /Standard /V 1 /R 2 /P -4 >>'), 'latin1');
+  }
+  return bytes;
+}
+
+test('pdf: a one-page PDF is read like a photo; Claude gets it as a document and is told it is a scanned page', async () => {
+  const page = await makePdf(1);
+  const fake = fakeAi(() => ({ stop_reason: 'end_turn', parsed_output: noteSaying('from the page') }));
+  const result = await createAiReader({ client: fake.client }).read({ ...readerInput, image: page });
+  assert.equal(result.notes[0].blocks[0].text, 'from the page');
+  const [file, words] = fake.calls[0].messages[0].content;
+  assert.equal(file.type, 'document');
+  assert.equal(file.source.type, 'base64');
+  assert.equal(file.source.media_type, 'application/pdf');
+  assert.equal(file.source.data, page.toString('base64'));
+  assert.match(words.text, /one scanned page/);
+  assert.match(words.text, /ignore it for handwriting/);
+  assert.match(words.text, /- Pump 3/);
+  // Photos are unchanged.
+  await createAiReader({ client: fake.client }).read(readerInput);
+  assert.equal(fake.calls[1].messages[0].content[0].type, 'image');
+  assert.doesNotMatch(fake.calls[1].messages[0].content[1].text, /scanned page/);
+});
+
+test('pdf: pages go into the Word file in order, and a page sent twice is added once', async () => {
+  const seen = [];
+  const app = await folderApp({
+    read: async ({ image }) => {
+      seen.push(image.subarray(0, 5).toString());
+      return { notes: [card(P(`page ${seen.length}`))], issue: '' };
+    },
+  });
+  const id = await newDocument(app.call, 'Scans');
+  const send = (label, body) => app.call(`/api/documents/${id}/photos?photo=${label}`, { method: 'POST', body, headers: { 'Content-Type': 'application/pdf' } });
+  assert.equal((await send(LABEL(1), await makePdf(1))).status, 200);
+  assert.equal((await send(LABEL(2), await makePdf(1))).status, 200);
+  const again = await json(await send(LABEL(2), await makePdf(1)));
+  assert.equal(again.added, 0, 'the same page label is not added twice');
+  assert.deepEqual(seen, ['%PDF-', '%PDF-']);
+  assert.deepEqual(await wordOf(app.wordFolder, 'Scans'), [['b0:page 1'], ['b0:page 2']]);
+});
+
+test('pdf: multi-page, password-locked, damaged and blank PDFs are refused or explained before paying', async () => {
+  let reads = 0;
+  const app = await folderApp({ read: async () => (reads += 1, { notes: [], issue: '' }) });
+  const id = await newDocument(app.call, 'Bad PDFs');
+  const send = (label, body) => app.call(`/api/documents/${id}/photos?photo=${label}`, { method: 'POST', body });
+  const two = await json(await send(LABEL(1), await makePdf(2)));
+  assert.equal(two.status, 400);
+  assert.match(two.error.message, /one page at a time/);
+  const locked = await json(await send(LABEL(2), await makePdf(1, { encrypted: true })));
+  assert.equal(locked.status, 422);
+  assert.match(locked.error.message, /locked with a password/);
+  const damaged = await json(await send(LABEL(3), Buffer.from('%PDF-1.7\nthis is not really a pdf')));
+  assert.equal(damaged.status, 422);
+  assert.match(damaged.error.message, /damaged/);
+  assert.equal(reads, 0, 'none of these was sent to the AI');
+  // A blank page is read, and says so in page words.
+  const blank = await json(await send(LABEL(4), await makePdf(1)));
+  assert.equal(blank.added, 0);
+  assert.equal(blank.issue, 'No handwriting was found on this page.');
+  assert.equal(reads, 1);
+});
+
+test('pdf: the PDF splitter for phones and laptops is served from the installed package', async () => {
+  const { base } = await startApp({ reader: { read: async () => noteSaying('x') } });
+  const response = await fetch(`${base}/vendor/pdf-lib.esm.min.js`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /javascript/);
+  const text = await response.text();
+  assert.ok(text.length > 100000);
+  assert.match(text, /EncryptedPDFError/);
+  assert.equal((await fetch(`${base}/vendor/other.js`)).status, 404);
 });

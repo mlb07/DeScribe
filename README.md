@@ -70,6 +70,16 @@ QR code opens the project for guests so each person picks a file; a file's QR co
 file. Any number of people can work on the same file at once and all see changes live. Files open
 in Word on this Mac can't be moved, and their project can't be renamed or deleted, until closed.
 
+## PDFs
+
+The Upload button (and dragging onto the page on a laptop) takes PDFs as well as photos, for
+example scans of notes or forms. The phone or laptop splits a PDF into pages, and each page then
+goes in exactly like a photo: in order, under a picked line if there is one, saved on the device
+first, never added twice. Each page costs about the same as a photo (around 1.5 cents). A blank
+page is shown as "blank" and adds nothing. Up to 100 pages and 100 MB per PDF; one page can be up
+to 20 MB. Password-locked and damaged PDFs are refused with a message, before anything is paid
+for. The splitting uses pdf-lib (installed with `npm install`).
+
 ## Lots of photos at once
 
 There is no limit: pick 30, 40 or more from Photos. Each photo is saved on the phone the moment
@@ -180,6 +190,7 @@ Changes apply to the next photo, with no restart.
 - `lib/app.js`: handles what the phone asks for, and who (you or a guest) may do what.
 - `lib/access.js`: passwords and the signed guest tickets.
 - `lib/onedrive.js`: finds the OneDrive web address for "Open in Word".
+- `lib/pdf.js`: checks PDF pages before they're read.
 - `test/`: automated checks. Run them with `npm test`.
 - `scribe/`: the earlier app, kept only for reference.
 

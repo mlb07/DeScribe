@@ -1094,6 +1094,7 @@ function savePhoto(item) {
     data: item.data,
     type: item.type,
     raw: Boolean(item.raw),
+    label: item.label || '',
     state: item.state === 'failed' ? 'failed' : 'waiting',
     message: item.state === 'failed' ? item.message : '',
   });
@@ -1123,7 +1124,13 @@ function showTray() {
     status.className = `status ${item.state}`;
     status.textContent = item.message;
     row.append(picture, status);
-    if (item.state === 'failed') {
+    if (item.state === 'failed' && item.kind === 'pdf') {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => dropItem(item));
+      row.append(remove);
+    } else if (item.state === 'failed') {
       const again = document.createElement('button');
       again.type = 'button';
       again.textContent = 'Try again';
@@ -1153,7 +1160,8 @@ function showTray() {
   // "Adding photos: 12 of 40"
   if (batch.total > 1 && active.some((item) => item.state !== 'failed')) {
     $('progress').hidden = false;
-    $('progress-text').textContent = `Adding photos: ${Math.min(batch.finished + 1, batch.total)} of ${batch.total}`;
+    const what = photoLine.some((item) => item.kind === 'page' || item.kind === 'pdf') ? 'Adding' : 'Adding photos';
+    $('progress-text').textContent = `${what}: ${Math.min(batch.finished + 1, batch.total)} of ${batch.total}`;
     $('progress-bar').style.width = `${Math.round((batch.finished / batch.total) * 100)}%`;
   } else {
     $('progress').hidden = true;
@@ -1173,7 +1181,7 @@ function setItem(item, state, message) {
 function dropItem(item) {
   const index = photoLine.indexOf(item);
   if (index >= 0) photoLine.splice(index, 1);
-  if (item.preview) URL.revokeObjectURL(item.preview);
+  if (item.preview?.startsWith('blob:')) URL.revokeObjectURL(item.preview);
   phoneStorage.remove('photos', item.id);
   showTray();
 }
@@ -1189,18 +1197,101 @@ async function preparePhoto(file) {
   }
 }
 
+// --- PDFs ----------------------------------------------------------------------------
+// A PDF is split here into single pages, and each page then goes through exactly like a
+// photo (in order, saved on this device, never added twice). The whole PDF is saved first,
+// so nothing is lost if the phone locks mid-way. Each page's label comes from the PDF's own
+// label and the page number, so splitting the same PDF again gives the same labels and the
+// Mac skips any page it already added.
+
+const MAX_PDF_PAGES = 100;
+const MAX_PDF_BYTES = 100 * 1024 * 1024;
+const MAX_PAGE_BYTES = 20 * 1024 * 1024; // the most the Mac takes for one page
+const PAGE_ORDER_STEP = 1000; // room after each file's place in line for its pages
+
+const isPdfFile = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+const pageId = (pdfId, index) => pdfId.slice(0, 24) + index.toString(16).padStart(8, '0');
+
+// A small picture for a PDF page in the list of what's being added.
+function pagePreview(label) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44"><rect x="8" y="4" width="28" height="36" rx="3" fill="#fff" stroke="#9aa3b2"/><text x="22" y="20" font-family="sans-serif" font-size="8" font-weight="700" text-anchor="middle" fill="#b3261e">PDF</text><text x="22" y="32" font-family="sans-serif" font-size="9" text-anchor="middle" fill="#1d2433">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+let pdfLib = null;
+const loadPdfLib = () => (pdfLib ??= import('/vendor/pdf-lib.esm.min.js'));
+
+// Splits a saved PDF into page items that take its place in line.
+async function splitPdf(item) {
+  if (item.data.byteLength > MAX_PDF_BYTES) throw new Error('This PDF is over 100 MB. Split it into smaller PDFs first.');
+  let lib;
+  try {
+    lib = await loadPdfLib();
+  } catch {
+    throw new Error("PDFs can't be opened right now. Check the connection to your Mac and try again.");
+  }
+  let source;
+  try {
+    source = await lib.PDFDocument.load(item.data, { updateMetadata: false });
+  } catch (error) {
+    // pdf-lib's own error type doesn't survive its build, so the message is checked too.
+    if (error instanceof lib.EncryptedPDFError || /is encrypted/i.test(String(error?.message))) {
+      throw new Error('This PDF is locked with a password. Save a copy without the password, then add that.');
+    }
+    throw new Error("This PDF is damaged and can't be read.");
+  }
+  let count;
+  try {
+    count = source.getPageCount(); // some broken files only fail here
+  } catch {
+    throw new Error("This PDF is damaged and can't be read.");
+  }
+  if (count === 0) throw new Error('This PDF has no pages.');
+  if (count > MAX_PDF_PAGES) throw new Error(`This PDF has ${count} pages. Up to ${MAX_PDF_PAGES} can be added at once; split it into smaller PDFs.`);
+  const pages = [];
+  for (let index = 0; index < count; index += 1) {
+    const one = await lib.PDFDocument.create();
+    const [page] = await one.copyPages(source, [index]);
+    one.addPage(page);
+    const bytes = await one.save();
+    const label = `${index + 1}/${count}`;
+    const page_ = {
+      id: pageId(item.id, index),
+      order: item.order + index,
+      documentId: item.documentId,
+      under: item.under,
+      data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      type: 'application/pdf',
+      raw: false,
+      kind: 'page',
+      label: `Page ${index + 1} of ${count}`,
+      preview: pagePreview(label),
+      state: 'waiting',
+      message: `Page ${index + 1} of ${count}: waiting…`,
+    };
+    if (bytes.byteLength > MAX_PAGE_BYTES) {
+      page_.state = 'failed';
+      page_.message = `Page ${index + 1} is over 20 MB, too large to send. Scan it at a lower quality.`;
+    }
+    pages.push(page_);
+  }
+  return pages;
+}
+
 function addPhotos(files) {
   const items = [...files].map((file) => {
-    nextOrder += 1;
+    nextOrder += PAGE_ORDER_STEP;
+    const pdf = isPdfFile(file);
     return {
       id: newPhotoId(),
       order: nextOrder,
       documentId: current.id,
       under: picked, // goes under the picked line (and the next one after it), or at the end
       file,
-      preview: null,
+      kind: pdf ? 'pdf' : 'photo',
+      preview: pdf ? pagePreview('…') : null,
       state: 'preparing',
-      message: 'Preparing…',
+      message: pdf ? 'Opening the PDF…' : 'Preparing…',
     };
   });
   photoLine.push(...items);
@@ -1218,7 +1309,7 @@ function prepareItems(items, saveOriginalsFirst) {
       for (const item of items) {
         try {
           item.data = await item.file.arrayBuffer();
-          item.type = item.file.type || 'image/jpeg';
+          item.type = item.kind === 'pdf' ? 'application/pdf' : item.file.type || 'image/jpeg';
           item.raw = true;
           await savePhoto({ ...item, state: 'waiting' });
         } catch {
@@ -1228,6 +1319,32 @@ function prepareItems(items, saveOriginalsFirst) {
     }
     for (const item of items) {
       if (!photoLine.includes(item)) continue;
+      if (item.kind === 'pdf') {
+        try {
+          if (!item.data) {
+            item.data = await item.file.arrayBuffer();
+            item.type = 'application/pdf';
+            item.raw = true;
+          }
+          const pages = await splitPdf(item);
+          // Pages are saved before the whole PDF is let go of, so a lock can't lose any.
+          for (const page of pages) await savePhoto(page);
+          const at = photoLine.indexOf(item);
+          if (at >= 0) photoLine.splice(at, 1, ...pages);
+          phoneStorage.remove('photos', item.id);
+          batch.total += pages.length - 1;
+          batch.finished += pages.filter((page) => page.state === 'failed').length;
+          item.file = null;
+          showTray();
+        } catch (problem) {
+          item.file = null;
+          setItem(item, 'failed', problem.message);
+          savePhoto(item);
+          batch.finished += 1;
+        }
+        runLine();
+        continue;
+      }
       try {
         const prepared = await preparePhoto(item.file);
         item.type = prepared.type || 'image/jpeg';
@@ -1266,6 +1383,8 @@ async function pickUpSavedPhotos() {
     const blob = new Blob([record.data], { type: record.type || 'image/jpeg' });
     nextOrder = Math.max(nextOrder, record.order);
     const unshrunk = record.raw && record.state !== 'failed';
+    const isPdfRecord = record.type === 'application/pdf';
+    const kind = isPdfRecord ? (record.raw ? 'pdf' : 'page') : 'photo';
     const item = {
       id: record.id,
       order: record.order,
@@ -1274,10 +1393,17 @@ async function pickUpSavedPhotos() {
       data: record.data,
       type: record.type,
       raw: Boolean(record.raw),
-      file: unshrunk ? new File([blob], 'photo', { type: record.type || 'image/jpeg' }) : null,
-      preview: unshrunk ? null : URL.createObjectURL(blob),
+      kind,
+      label: record.label || '',
+      file: unshrunk ? new File([blob], kind === 'pdf' ? 'file.pdf' : 'photo', { type: record.type || 'image/jpeg' }) : null,
+      preview: isPdfRecord ? pagePreview(kind === 'pdf' ? '…' : (record.label || '').replace(/^Page (\d+) of (\d+)$/, '$1/$2')) : unshrunk ? null : URL.createObjectURL(blob),
       state: record.state === 'failed' ? 'failed' : unshrunk ? 'preparing' : 'waiting',
-      message: record.state === 'failed' ? record.message : unshrunk ? 'Preparing…' : 'Waiting…',
+      message:
+        record.state === 'failed'
+          ? record.message
+          : unshrunk
+            ? kind === 'pdf' ? 'Opening the PDF…' : 'Preparing…'
+            : record.label ? `${record.label}: waiting…` : 'Waiting…',
     };
     photoLine.push(item);
     if (unshrunk) toPrepare.push(item);
@@ -1295,7 +1421,7 @@ async function pickUpSavedPhotos() {
 }
 
 async function sendPhoto(item) {
-  setItem(item, 'working', 'Reading the handwriting…');
+  setItem(item, 'working', item.label ? `${item.label}: reading the handwriting…` : 'Reading the handwriting…');
   if (item.under) {
     // Let a save of your typing finish first, so the picked line's words are up to date.
     for (let waited = 0; edits.inFlight && waited < 15000; waited += 200) await sleep(200);
@@ -1816,9 +1942,9 @@ document.addEventListener('drop', (event) => {
   event.preventDefault();
   dragDepth = 0;
   $('drop-zone').hidden = true;
-  const photos = [...event.dataTransfer.files].filter((file) => file.type.startsWith('image/') || /\.(heic|heif|jpe?g|png|webp)$/i.test(file.name));
+  const photos = [...event.dataTransfer.files].filter((file) => file.type.startsWith('image/') || isPdfFile(file) || /\.(heic|heif|jpe?g|png|webp)$/i.test(file.name));
   if (!photos.length) {
-    showNotice('Only photos can be added here.');
+    showNotice('Only photos and PDFs can be added here.');
     return;
   }
   if (current && !$('main').hidden) addPhotos(photos);

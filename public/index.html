@@ -68,7 +68,7 @@
 
     <button id="done-editing" class="done-editing primary" type="button">Done</button>
 
-    <div id="drop-zone" class="drop-zone" hidden><p>Drop photos to add them</p></div>
+    <div id="drop-zone" class="drop-zone" hidden><p>Drop photos or PDFs to add them</p></div>
 
     <div id="menu-backdrop" class="menu-backdrop" hidden></div>
     <aside id="menu" class="menu" aria-label="Lists and archive" hidden>
@@ -96,7 +96,7 @@
     </div>
 
     <nav class="bar">
-      <button id="choose" type="button">Photos</button>
+      <button id="choose" type="button">Upload</button>
       <button id="snap" class="primary snap" type="button">Snap</button>
       <button id="word" type="button">Word</button>
     </nav>
@@ -122,7 +122,7 @@
   </dialog>
 
   <input id="camera" type="file" accept="image/*" capture="environment" hidden>
-  <input id="library" type="file" accept="image/*" multiple hidden>
+  <input id="library" type="file" accept="image/*,application/pdf,.pdf" multiple hidden>
 
   <script type="module" src="app.js"></script>
 </body>
