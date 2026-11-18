@@ -1858,3 +1858,78 @@ test('pdf: the PDF splitter for phones and laptops is served from the installed 
   assert.match(text, /EncryptedPDFError/);
   assert.equal((await fetch(`${base}/vendor/other.js`)).status, 404);
 });
+
+// --- Moving lines (hold and drag) ------------------------------------------------------
+
+const moveOf = (doc, texts, after, levelShift = 0) => {
+  const lines = texts.map((t) => findLine(doc, t));
+  const target = after === null ? null : findLine(doc, after);
+  return {
+    op: 'move',
+    paras: lines.map((l) => l.para),
+    expects: lines.map((l) => plainOfMarkup(l.text)),
+    after: target ? target.para : -1,
+    afterExpect: target ? plainOfMarkup(target.text) : '',
+    levelShift,
+  };
+};
+
+test('moving: a bullet moves with its sub-bullets, to the top or after any line, and Word matches', async () => {
+  const { call, id, document, wordFolder } = await editableDoc();
+  let r = await json(await editDoc(call, id, [moveOf(document, ['Letters', 'alpha', 'beta'], null)]));
+  assert.equal(r.status, 200);
+  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]']]);
+  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:Letters', 'b1:alpha', 'b1:beta'], ['b0:the pump is down'], ['b0:Checks:', 'n1:check oil', 'n1:check gauge']]);
+  assert.ok(Array.isArray(r.indexMap));
+  // A sub-bullet into another card, after "alpha"; its yellow guess goes with it.
+  r = await json(await editDoc(call, id, [moveOf(r.document, ['check [[gauge]]'], 'alpha')]));
+  assert.deepEqual(shape(r.document.notes), [['b0:Letters', 'b1:alpha', 'n1:check [[gauge]]', 'b1:beta'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil']]);
+  // To the very end.
+  r = await json(await editDoc(call, id, [moveOf(r.document, ['Letters', 'alpha', 'check [[gauge]]', 'beta'], 'check oil')]));
+  assert.deepEqual(shape(r.document.notes), [['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil'], ['b0:Letters', 'b1:alpha', 'n1:check [[gauge]]', 'b1:beta']]);
+  assert.deepEqual(await wordOf(wordFolder, 'Edit me'), [['b0:the pump is down'], ['b0:Checks:', 'n1:check oil'], ['b0:Letters', 'b1:alpha', 'n1:check gauge', 'b1:beta']]);
+});
+
+test('moving: a sub-bullet can step out to a main bullet, and moving a line to where it already is changes nothing', async () => {
+  const { call, id, document, wordFolder } = await editableDoc();
+  let r = await json(await editDoc(call, id, [moveOf(document, ['alpha'], null, -1)]));
+  assert.deepEqual(shape(r.document.notes), [['b0:alpha'], ['b0:the [[pump]] is down'], ['b0:Checks:', 'n1:check oil', 'n1:check [[gauge]]'], ['b0:Letters', 'b1:beta']]);
+  const before = await readFile(path.join(wordFolder, 'Edit me.docx'));
+  r = await json(await editDoc(call, id, [moveOf(r.document, ['check oil'], 'Checks:')]));
+  assert.equal(r.status, 200);
+  assert.deepEqual(await readFile(path.join(wordFolder, 'Edit me.docx')), before, 'Word file not rewritten');
+});
+
+test('moving: refused when Word changed the lines, when the lines are not together, into itself, or mixed with other changes', async () => {
+  const { call, id, document } = await editableDoc();
+  const move = moveOf(document, ['Letters', 'alpha', 'beta'], null);
+  const stale = await json(await editDoc(call, id, [{ ...move, expects: ['Letters', 'alpha', 'gamma'] }]));
+  assert.equal(stale.status, 409);
+  assert.equal(stale.error.code, 'changed');
+  const target = await json(await editDoc(call, id, [{ ...moveOf(document, ['alpha'], 'Letters'), afterExpect: 'Not there' }]));
+  assert.equal(target.status, 409);
+  const gap = moveOf(document, ['Letters', 'beta'], null);
+  assert.equal((await editDoc(call, id, [gap])).status, 409);
+  assert.equal((await editDoc(call, id, [moveOf(document, ['Letters', 'alpha', 'beta'], 'alpha')])).status, 400);
+  const pump = findLine(document, 'the [[pump]] is down');
+  assert.equal((await editDoc(call, id, [move, { op: 'set', para: pump.para, expect: 'the pump is down', text: 'x' }])).status, 400);
+  for (const bad of [{ ...move, levelShift: 3 }, { ...move, after: -2 }, { ...move, paras: [] }]) {
+    assert.equal((await editDoc(call, id, [bad])).status, 400);
+  }
+  // Nothing was changed by any of these.
+  assert.deepEqual(shape((await json(await call(`/api/documents/${id}`))).document.notes), START);
+});
+
+test('moving: with the same words on two lines, each keeps its own yellow guess', async () => {
+  const answers = [{ notes: [card(P('fix the [[valve]]')), card(P('middle')), card(P('fix the valve'))], issue: '' }];
+  const app = await folderApp({ read: async () => answers.shift() });
+  const id = await newDocument(app.call, 'Twins');
+  const { document } = await json(await sendPhoto(app.call, id, LABEL(1)));
+  assert.deepEqual(lineTexts(document), [['fix the [[valve]]'], ['middle'], ['fix the valve']]);
+  // Move the plain copy to the top: the yellow stays with the other copy, now second.
+  const plain = document.notes[2].blocks[0];
+  const r = await json(await editDoc(app.call, id, [{ op: 'move', paras: [plain.para], expects: ['fix the valve'], after: -1, afterExpect: '' }]));
+  assert.deepEqual(lineTexts(r.document), [['fix the valve'], ['fix the [[valve]]'], ['middle']]);
+  const again = await json(await app.call(`/api/documents/${id}`));
+  assert.deepEqual(lineTexts(again.document), [['fix the valve'], ['fix the [[valve]]'], ['middle']], 'still right when read back');
+});

@@ -170,6 +170,17 @@ moment after you stop typing (and straight away when you leave the line or tap D
 - A line you retype here becomes plain text in Word (bold or colours on that line go);
   bullets and numbering always stay.
 
+## Moving lines
+
+Hold a line still for a moment (finger on the phone, mouse button on a laptop) and it lifts;
+drag it, and a blue bar shows where it will land. Let go to drop it, or press Esc to cancel.
+A bullet takes its sub-bullets with it, and a line can go anywhere: within its card, into
+another card, under another heading, or to the very top. Dropped at the top or under a plain
+line, a sub-bullet becomes a main bullet. Near the top or bottom of the screen the page
+scrolls. Yellow guesses go with the line. The move is saved into the Word file and shows on
+every screen. While you're typing in a line, holding selects text as usual, and a quick swipe
+still scrolls.
+
 ## Files you can edit in TextEdit
 
 - `crew-words.txt`: your crew's words and abbreviations, one per line.

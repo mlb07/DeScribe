@@ -412,6 +412,8 @@ function refillKeepingCaret(line, pieces) {
 
 let documents = [];
 let current = null;
+// A line being moved (see "Moving lines" below).
+const drag = { timer: null, x: 0, y: 0, row: null, active: false, block: [], ghost: null, marker: null, target: undefined, offset: 0, scroll: 0, frame: 0, pickedBefore: null, swallowClick: false };
 let needsRender = false;
 const paper = $('paper');
 const BULLETS = ['•', '–', '▪'];
@@ -479,6 +481,11 @@ function renumber(section) {
 }
 
 function showDocument(force = false) {
+  // Never redraw under a line being dragged; it catches up when the drag ends.
+  if (drag.active) {
+    needsRender = true;
+    return;
+  }
   if (!force && !settled()) {
     needsRender = true;
     return;
@@ -1024,6 +1031,252 @@ paper.addEventListener('focusout', (event) => {
 });
 
 $('done-editing').addEventListener('click', () => lineBeingEdited()?.blur());
+
+// --- Moving lines: hold a line, then drag it somewhere else ---------------------------
+// Hold a line still for a moment (finger or mouse) and it lifts; a blue bar shows where
+// it will land. A bullet takes its sub-bullets with it. While you're typing in a line,
+// holding selects text as usual instead. The move is saved into Word like any edit.
+
+const HOLD_MS = 400;
+
+const rowsInOrder = () => [...paper.querySelectorAll('.row')];
+const lineOf = (row) => row.querySelector('.line');
+const isBulletRow = (row) => row.dataset.kind !== 'paragraph';
+
+// The rows that move together: the line, and (for a bullet) the deeper bullets under it.
+function blockFor(row) {
+  const block = [row];
+  if (!isBulletRow(row)) return block;
+  const level = Number(row.dataset.level) || 0;
+  for (let next = row.nextElementSibling; next?.classList.contains('row') && isBulletRow(next) && Number(next.dataset.level) > level; next = next.nextElementSibling) block.push(next);
+  return block;
+}
+
+function canHold(row) {
+  if (!current?.editable || !row) return false;
+  const line = lineOf(row);
+  return Boolean(line && line.dataset.para !== undefined && line.isContentEditable && line !== lineBeingEdited());
+}
+
+function holdStart(event, x, y) {
+  holdCancel();
+  if (drag.active) return;
+  const row = event.target.closest?.('.row');
+  if (!row || event.target.closest('.mark.toggle, .delete-note') || !canHold(row)) return;
+  drag.row = row;
+  drag.x = x;
+  drag.y = y;
+  drag.pickedBefore = picked;
+  drag.timer = setTimeout(() => startDrag(x, y), HOLD_MS);
+}
+
+function holdCancel() {
+  clearTimeout(drag.timer);
+  drag.timer = null;
+}
+
+function startDrag(x, y) {
+  drag.timer = null;
+  const row = drag.row;
+  if (!row?.isConnected) return;
+  // Holding put the cursor in the line and picked it: undo both, this is a move.
+  lineOf(row).blur();
+  getSelection()?.removeAllRanges();
+  picked = drag.pickedBefore;
+  showPicked();
+  drag.active = true;
+  drag.block = blockFor(row);
+  drag.target = undefined;
+  navigator.vibrate?.(15);
+  document.body.classList.add('dragging');
+  drag.block.forEach((r) => r.classList.add('drag-source'));
+
+  // A floating copy follows the finger; the bar marks where it will land.
+  const box = row.getBoundingClientRect();
+  drag.offset = y - box.top;
+  drag.ghost = document.createElement('div');
+  drag.ghost.className = 'drag-ghost';
+  drag.ghost.style.width = `${paper.getBoundingClientRect().width - 24}px`;
+  drag.ghost.style.left = `${paper.getBoundingClientRect().left + 12}px`;
+  for (const r of drag.block) {
+    const copy = r.cloneNode(true);
+    copy.querySelectorAll('[contenteditable]').forEach((el) => el.removeAttribute('contenteditable'));
+    drag.ghost.append(copy);
+  }
+  document.body.append(drag.ghost);
+  drag.marker = document.createElement('div');
+  drag.marker.className = 'drop-marker';
+  paper.append(drag.marker);
+  moveDrag(x, y);
+  drag.frame = requestAnimationFrame(autoScroll);
+}
+
+// Where the block would land for a finger at height y: after a row, or at the top (null).
+function dropTargetAt(y) {
+  const rows = rowsInOrder().filter((r) => !drag.block.includes(r) && lineOf(r)?.dataset.para !== undefined);
+  let target = null;
+  for (const r of rows) {
+    const box = r.getBoundingClientRect();
+    if (y > box.top + box.height / 2) target = r;
+    else break;
+  }
+  return target;
+}
+
+function moveDrag(x, y) {
+  drag.x = x;
+  drag.y = y;
+  drag.ghost.style.top = `${y - drag.offset}px`;
+  drag.target = dropTargetAt(y);
+  // The bar goes just under the target row (or above the first row).
+  const paperBox = paper.getBoundingClientRect();
+  let barY;
+  let barX = 20;
+  if (drag.target) {
+    const box = drag.target.getBoundingClientRect();
+    barY = box.bottom + 2;
+    barX = box.left - paperBox.left;
+  } else {
+    const first = rowsInOrder().find((r) => !drag.block.includes(r)) || drag.block[0];
+    barY = first.getBoundingClientRect().top - 4;
+  }
+  drag.marker.style.top = `${barY - paperBox.top}px`;
+  drag.marker.style.left = `${Math.max(12, barX)}px`;
+  // Near the top or bottom of the screen, scroll.
+  const edge = 70;
+  drag.scroll = y < edge ? -Math.ceil((edge - y) / 5) : y > innerHeight - edge ? Math.ceil((y - (innerHeight - edge)) / 5) : 0;
+}
+
+function autoScroll() {
+  if (!drag.active) return;
+  if (drag.scroll) {
+    scrollBy(0, drag.scroll);
+    moveDrag(drag.x, drag.y);
+  }
+  drag.frame = requestAnimationFrame(autoScroll);
+}
+
+function endDrag(drop) {
+  holdCancel();
+  if (!drag.active) return;
+  drag.active = false;
+  cancelAnimationFrame(drag.frame);
+  drag.swallowClick = true;
+  setTimeout(() => {
+    drag.swallowClick = false;
+  }, 400);
+  drag.ghost?.remove();
+  drag.marker?.remove();
+  document.body.classList.remove('dragging');
+  drag.block.forEach((r) => r.classList.remove('drag-source'));
+  const { block, target } = drag;
+  drag.block = [];
+  if (drop && target !== undefined) moveLines(block, target);
+  else if (needsRender && settled()) showDocument(true);
+}
+
+// Saves the move into Word. The block's first line may step out a level so it fits where
+// it lands: under a plain line or at the top it becomes a main bullet, and it is never
+// more than one level deeper than the bullet above it.
+async function moveLines(block, target) {
+  const rows = rowsInOrder();
+  const before = rows[rows.indexOf(block[0]) - 1] || null;
+  const firstLevel = Number(block[0].dataset.level) || 0;
+  let newLevel = firstLevel;
+  if (isBulletRow(block[0])) {
+    if (!target || !isBulletRow(target)) newLevel = 0;
+    else newLevel = Math.min(firstLevel, (Number(target.dataset.level) || 0) + 1);
+  }
+  const levelShift = newLevel - firstLevel;
+  const catchUp = () => {
+    if (needsRender && settled()) showDocument(true);
+  };
+  if (target === before && levelShift === 0) return catchUp(); // dropped where it was
+  if (!(await saveAllEdits())) {
+    alert("Your last change hasn't been saved yet. Try again once it's saved.");
+    return catchUp();
+  }
+  if (!block.every((r) => r.isConnected) || (target && !target.isConnected)) {
+    showNotice('The list changed while you were moving that line. Try again.');
+    return catchUp();
+  }
+  const lines = block.map(lineOf);
+  const move = {
+    op: 'move',
+    paras: lines.map((l) => Number(l.dataset.para)),
+    expects: lines.map((l) => l.dataset.expect),
+    after: target ? Number(lineOf(target).dataset.para) : -1,
+    afterExpect: target ? lineOf(target).dataset.expect : '',
+    levelShift,
+  };
+  // Show it moved straight away; the Mac's answer then redraws it exactly.
+  if (target) target.after(...block);
+  else rowsInOrder()[0]?.before(...block);
+  edits.inFlight = true;
+  try {
+    const result = await callJson(`/api/documents/${current.id}/edits`, { method: 'POST', type: 'application/json', body: JSON.stringify({ edits: [move] }) });
+    if (result.indexMap) movePicks(result.indexMap);
+    adopt(result.document);
+    refreshPicks();
+  } catch (problem) {
+    showNotice(problem.message);
+    try {
+      adopt((await callJson(`/api/documents/${current.id}`)).document);
+    } catch {
+      // The next change or photo brings it up to date.
+    }
+  } finally {
+    edits.inFlight = false;
+    showDocument(true);
+  }
+}
+
+// Mouse (laptop): press and hold without moving. Moving first selects text as usual.
+paper.addEventListener('mousedown', (event) => {
+  if (event.button === 0) holdStart(event, event.clientX, event.clientY);
+});
+document.addEventListener('mousemove', (event) => {
+  if (drag.active) {
+    event.preventDefault();
+    moveDrag(event.clientX, event.clientY);
+  } else if (drag.timer && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 6) {
+    holdCancel();
+  }
+});
+document.addEventListener('mouseup', () => endDrag(true));
+
+// Touch (phone): hold still; moving first scrolls the page as usual.
+paper.addEventListener('touchstart', (event) => {
+  if (event.touches.length !== 1) return holdCancel();
+  holdStart(event, event.touches[0].clientX, event.touches[0].clientY);
+}, { passive: true });
+document.addEventListener('touchmove', (event) => {
+  const touch = event.touches[0];
+  if (drag.active) {
+    event.preventDefault(); // the page doesn't scroll while a line is being dragged
+    moveDrag(touch.clientX, touch.clientY);
+  } else if (drag.timer && Math.hypot(touch.clientX - drag.x, touch.clientY - drag.y) > 10) {
+    holdCancel();
+  }
+}, { passive: false });
+document.addEventListener('touchend', (event) => {
+  if (drag.active) event.preventDefault(); // no tap after a drop
+  endDrag(true);
+}, { passive: false });
+document.addEventListener('touchcancel', () => endDrag(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && drag.active) endDrag(false);
+});
+// The click that follows letting go is not a tap on the line.
+paper.addEventListener('click', (event) => {
+  if (drag.swallowClick) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+}, true);
+paper.addEventListener('contextmenu', (event) => {
+  if (drag.active || drag.timer) event.preventDefault();
+});
 
 // --- The line of photos waiting to be added, strictly in the order snapped ----
 // There is no limit on how many photos you add at once. Each one is shrunk and saved on

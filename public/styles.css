@@ -185,6 +185,7 @@ main {
 .tray button { min-height: 40px; padding: 0 12px; font-size: 15px; }
 
 .paper {
+  position: relative;
   margin-top: 16px;
   padding: 24px 20px;
   border-radius: 12px;
@@ -398,3 +399,30 @@ body.asking-password .tray { visibility: hidden; }
 .menu-list .menu-file { flex-wrap: wrap; }
 .menu-list .menu-file .open-list { flex: 1 1 160px; }
 .menu-list .file-actions { display: flex; gap: 6px; margin-left: auto; }
+
+/* Moving lines: hold, then drag. */
+.paper .row { -webkit-touch-callout: none; }
+body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; cursor: grabbing; }
+.paper .row.drag-source { opacity: 0.3; }
+.drag-ghost {
+  position: fixed;
+  z-index: 40;
+  pointer-events: none;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--paper-text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  transform: rotate(-1deg);
+  opacity: 0.95;
+}
+.drag-ghost .row { display: flex; gap: 6px; margin: 0 0 4px; }
+.drop-marker {
+  position: absolute;
+  right: 12px;
+  height: 3px;
+  border-radius: 2px;
+  background: #4d7fc4;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(77, 127, 196, 0.25);
+}
