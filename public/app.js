@@ -2120,16 +2120,10 @@ const wideScreen = window.matchMedia('(min-width: 900px)');
 let projects = [];
 const pair = { shown: '', project: '' };
 
-function pairStatus() {
-  const locked = pair.project ? projects.find((p) => p.name === pair.project)?.locked : current?.locked;
-  const who = locked ? 'Anyone with it also needs the password.' : 'Anyone with it can see and edit, no password needed.';
-  return `This code never changes, so you can print it or send it. ${who} "Reset link" makes a new code and stops the old one working.`;
-}
-
 function showPairCode({ svg, url }) {
   $('pair-code').innerHTML = svg; // made by the Mac from a link it built itself
   $('pair-link').textContent = url;
-  $('pair-status').textContent = pairStatus();
+  $('pair-status').textContent = ''; // only used for problems
 }
 
 // The QR code is for the open file, or (when asked from a project) for the whole project.

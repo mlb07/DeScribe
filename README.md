@@ -2,6 +2,13 @@
 
 Snap handwritten notes on your iPhone and they're added, typed up, to a Word document.
 
+## Look
+
+DeScribe uses Deutser's colors (from deutser.com): deep maroon, coral red, white and light grey,
+with a dark version when the phone is in dark mode. The app icon is Deutser's red D (in
+`public/brand/`), shown on the iPhone home screen ("Add to Home Screen"), in the browser tab and
+next to the name. Fonts are the phone's and computer's own, since Deutser's fonts are licensed.
+
 ## Start it
 
 In Terminal, from this folder:
